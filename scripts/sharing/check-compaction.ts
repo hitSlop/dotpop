@@ -5,9 +5,13 @@ import { createHash } from "node:crypto";
 import type { Miniflare } from "miniflare";
 
 export function relayHarness(source: string) {
-  return `import relay, {SlopRoom as Room, SharingAccount} from ${JSON.stringify(source)};
-export { SharingAccount }; export default relay;
-export class SlopRoom {
+  return `import relay, {CloudDocument as Room, DocumentAccount as Account} from ${JSON.stringify(source)};
+export default relay;
+export class DocumentAccount {
+  constructor(state,env){this.inner=new Account(state,env);}
+  async fetch(req){try{return await this.inner.fetch(req);}catch(error){console.error('Test account failure:',String(error));throw error;}}
+}
+export class CloudDocument {
   constructor(state, env) { this.state = state; this.inner = new Room(state, env); }
   async fetch(req) {
     const path = new URL(req.url).pathname;
@@ -36,7 +40,7 @@ export class SlopRoom {
       return new Response('ready');
     }
     if (path === '/__test/alarm') return await this.inner.alarm();
-    return await this.inner.fetch(req);
+    try { return await this.inner.fetch(req); } catch(error) { console.error('Test document failure:',String(error)); throw error; }
   }
   alarm() { return this.inner.alarm(); }
   webSocketMessage(...args) { return this.inner.webSocketMessage(...args); }
@@ -68,7 +72,7 @@ const push = (id: number, start: number, end: number, bytes = new Uint8Array([7]
     ...uint(bytes.length),
     ...bytes,
   ]);
-function decode(bytes: ArrayBuffer) {
+export function decode(bytes: ArrayBuffer, current = false) {
   const b = new Uint8Array(bytes);
   let pos = 0;
   const read = () => {
@@ -90,7 +94,7 @@ function decode(bytes: ArrayBuffer) {
   if (tag === 1) return { tag, write: read(), version: version() };
   if (tag === 5) return { tag, id: read(), status: read() };
   if (tag === 6) return { tag, code: read() };
-  if (tag === 2) {
+  if (tag === (current ? 3 : 2)) {
     const records = [];
     for (let count = read(); count; count--) {
       const spans = [];
@@ -119,20 +123,21 @@ export async function checkCompaction(
 ) {
   assert.equal(
     (
-      await call("rooms", identity("anonymous-owner", "anonymous"), "POST", {
+      await call("documents", identity("anonymous-owner", "anonymous"), "POST", {
         document: "00000000-0000-4000-a000-000000000002",
       })
     ).status,
     401,
   );
-  const namespace = await worker.getDurableObjectNamespace("ROOMS", "relay");
+  const namespace = await worker.getDurableObjectNamespace("DOCUMENTS", "relay");
   const bucket = await worker.getR2Bucket("SEEDS", "relay");
-  const created = await call("rooms", owner, "POST", {
+  const created = await call("documents", owner, "POST", {
     document: "00000000-0000-4000-a000-000000000001",
   });
-  assert.equal(created.status, 200);
+  assert.equal(created.status, 200, "Document creation: "+await created.clone().text());
   const room = await created.json();
-  const base = "rooms/" + room.room;
+  room.capability = (await (await call("documents/"+room.room+"/sharing",owner,"POST")).json()).capability;
+  const base = "documents/" + room.room;
   const stub = namespace.get(namespace.idFromName(room.room));
   async function test(path: string, body?: unknown) {
     const response = await stub.fetch("https://test/__test/" + path, {
@@ -192,8 +197,8 @@ export async function checkCompaction(
   assert.equal((await compact(4, new Uint8Array((16 << 20) + 1))).status, 413);
   let stage = "initial backfill";
   const sockets: any[] = [];
-  async function socket(ip = "203.0.113.1") {
-    const response = await call(base + "/sync", room.capability, "GET", undefined, {
+  async function socket(ip = "203.0.113.1", endpoint = base, capability = room.capability) {
+    const response = await call(endpoint + "/sync", capability, "GET", undefined, {
       Upgrade: "websocket",
       "Sec-WebSocket-Protocol": "pop.sync.v1",
       "CF-Connecting-IP": ip,
@@ -268,23 +273,9 @@ export async function checkCompaction(
     [["0000000000000001", 0, 3]],
     "Seed-only peers produce no empty spans",
   );
-  const archive = (await bucket.list({ prefix: `rooms/${room.room}/compacted/` })).objects;
-  assert.equal(archive.length, 1);
-  const archived = await bucket.get(archive[0]!.key);
-  assert(archived && archived.size > 3 << 20);
-  assert(Number(archived.customMetadata?.expires) > Date.now());
-  await bucket.put(`rooms/${room.room}/compacted/expired`, new Uint8Array([0]), {
-    customMetadata: { expires: "0" },
-  });
-  await sql("UPDATE meta SET value='0' WHERE key='last_active'");
+  assert.equal((await bucket.list({prefix:`rooms/${room.room}/compacted/`})).objects.length,0,"compaction retains no history archive");
   await test("alarm");
-  assert.equal(
-    await bucket.head(`rooms/${room.room}/compacted/expired`),
-    null,
-    "Alarm sweeps expired archives",
-  );
-  assert.equal((await call(base, room.capability)).status, 200, "Open sockets prevent idle expiry");
-  await sql("UPDATE meta SET value=? WHERE key='last_active'", [String(Date.now())]);
+  assert.equal((await call(base,owner)).status,200,"offline retention is persistent");
   stage = "behind base";
   const behind = await socket("203.0.113.2");
   const frames = await behind.joined();
@@ -319,11 +310,6 @@ export async function checkCompaction(
     '[["0000000000000001",4],["0000000000000002",6]]',
     "Compaction leaves heads unchanged",
   );
-  const secondArchive = await bucket.get(`rooms/${room.room}/compacted/2`);
-  assert(secondArchive);
-  const secondBytes = new Uint8Array(await secondArchive.arrayBuffer());
-  const firstLength = new DataView(secondBytes.buffer).getUint32(0);
-  assert(firstLength > body.length, "Previous base is archived first");
   for (const ws of sockets) {
     try {
       ws.close();
@@ -456,22 +442,14 @@ export async function checkCompaction(
   assert.equal((await bucket.list({ prefix: `rooms/${room.room}/compacted/` })).objects.length, 0);
   assert.equal((await sql("SELECT count(*) AS n FROM records"))[0].n, 0);
   assert.equal((await sql("SELECT count(*) AS n FROM chunks"))[0].n, 0);
-  assert.deepEqual(
-    (await sql("SELECT key FROM meta ORDER BY key")).map((r) => r.key),
-    ["ended_at", "phase"],
-  );
-  assert.equal((await call(base, room.capability)).status, 410);
-  await sql("UPDATE meta SET value='0' WHERE key='ended_at'");
+  assert.equal((await call(base,owner)).status,410);
   await test("alarm");
-  assert.equal((await call(base, room.capability)).status, 404);
-  assert.equal(
-    await (await call("account/rooms/00000000-0000-4000-a000-000000000001", owner)).json(),
-    null,
-  );
+  assert.equal((await call(base,owner)).status,410,"deletion tombstone preserves UUID ownership");
   const idleRoom = await (
-    await call("rooms", owner, "POST", { document: "00000000-0000-4000-a000-000000000003" })
+    await call("documents", owner, "POST", { document: "00000000-0000-4000-a000-000000000003" })
   ).json();
-  const idleBase = "rooms/" + idleRoom.room;
+  const idleBase = "documents/" + idleRoom.room;
+  idleRoom.capability = (await (await call(idleBase+"/sharing",owner,"POST")).json()).capability;
   assert.equal(
     (
       await call(idleBase + "/seed", owner, "PUT", seed, {
@@ -495,13 +473,118 @@ export async function checkCompaction(
   assert.equal((await call(idleBase, idleRoom.capability)).status, 200, "Recent room remains Live");
   await idleTest("sql", { sql: "UPDATE meta SET value='0' WHERE key='last_active'" });
   await idleTest("alarm");
-  assert.equal((await call(idleBase, idleRoom.capability)).status, 410, "Idle room ends");
-  assert.equal(
-    await (await call("account/rooms/00000000-0000-4000-a000-000000000003", owner)).json(),
-    null,
-    "Idle expiry releases account index and quota",
-  );
-  console.log(
-    "Passed: compaction conflicts/bounds/hash, archive/base/backfill, quota relief and row cap, push budget, permanent/transient close policy, Stop and tombstone purge.",
-  );
+  assert.equal((await call(idleBase, owner)).status,200,"persistent document never idle expires");
+  // These are independent behavioral scenarios. Keep their real per-IP rate
+  // budgets separate; rate-limit exhaustion has its own owning check.
+  const fromIP = (ip: string): typeof call => (path, token, method, body, headers) =>
+    call(path, token, method, body, { ...headers, "CF-Connecting-IP": ip });
+  const publicationCall = fromIP("198.51.100.240");
+  const releaseCall = fromIP("198.51.100.241");
+  const expiryCall = fromIP("198.51.100.242");
+  // Fresh epochs replace the bootstrap seed and inventory together, not only record 0.
+  const epochRoom = await (await publicationCall("documents", owner, "POST", {
+    document: "00000000-0000-4000-a000-000000000004",
+  })).json();
+  const epochBase = "documents/" + epochRoom.room;
+  epochRoom.capability = (await (await publicationCall(epochBase+"/sharing",owner,"POST")).json()).capability;
+  const manifest = { app: "aa".repeat(32), resources: [] };
+  assert.equal((await publicationCall(epochBase + "/seed", owner, "PUT", seed, {
+    "X-Sharing-SHA256": hash(seed), "X-Sharing-App": manifest.app, "X-Sharing-Version": "[]",
+  })).status, 200);
+  assert.equal((await publicationCall(epochBase + "/resources", owner, "POST", manifest)).status, 200);
+  assert.equal((await publicationCall(epochBase + "/open", owner, "POST")).status, 200);
+  const epochStub = namespace.get(namespace.idFromName(epochRoom.room));
+  const epochSql = (sql: string, args: unknown[] = []) => epochStub.fetch("https://test/__test/sql", {
+    method: "POST", body: JSON.stringify({sql, args}),
+  });
+  const latest = new Uint8Array(512).fill(17), latestHash = hash(latest);
+  assert.equal((await publicationCall(epochBase + "/epochs/" + latestHash, epochRoom.capability, "PUT", latest)).status, 200,
+    "an immutable fresh seed can be staged while the room is live");
+  const oldBlob = new Uint8Array([1, 2, 3]);
+  assert.equal((await publicationCall(epochBase + "/blob/" + hash(oldBlob), epochRoom.capability, "PUT", oldBlob, {
+    "Content-Type": "application/octet-stream", "Content-Length": String(oldBlob.length),
+  })).status, 200);
+  // Occupied accepted inventory at the normal room budget must not prevent a
+  // bounded staged replacement from uploading its new referenced attachment.
+  // The existing SQL harness models old retained occupancy without allocating 100 MiB.
+  const oldResource = { key: hash(oldBlob), hash: hash(oldBlob), size: oldBlob.length, media_type: "application/octet-stream" };
+  for (let n = 0; n < 10; n++) {
+    const id = n === 0 ? hash(oldBlob) : n.toString(16).padStart(64, "0");
+    await epochSql("INSERT OR REPLACE INTO resource_blobs VALUES(?,?)", [id, JSON.stringify({ ...oldResource, key: id, hash: id, size: 10485760 })]);
+  }
+  const replacementBlob = new Uint8Array([4, 5, 6, 7]);
+  const replacement = { key: hash(replacementBlob), hash: hash(replacementBlob), size: replacementBlob.length, media_type: "application/octet-stream" };
+  const replacementHeaders = { "Content-Type": replacement.media_type, "Content-Length": String(replacement.size) };
+  assert.equal((await publicationCall(epochBase + "/blob/" + replacement.hash, epochRoom.capability, "PUT", replacementBlob, replacementHeaders)).status, 413,
+    "ordinary uploads retain their existing room quota");
+  assert.equal((await publicationCall(epochBase + "/epochs/" + latestHash + "/blobs/" + replacement.hash, epochRoom.capability, "PUT", replacementBlob, replacementHeaders)).status, 200,
+    "an epoch stage has a separate bounded blob budget");
+  assert.equal((await (await publicationCall(epochBase + "/blobs", epochRoom.capability)).json()).length, 10,
+    "staged blobs do not enter the current visible inventory");
+  await epochSql("DELETE FROM resource_blobs");
+  await epochSql("INSERT INTO resource_blobs VALUES(?,?)", [oldResource.hash, JSON.stringify(oldResource)]);
+  const beforeEpochSocket = await socket("203.0.113.31", epochBase, epochRoom.capability);
+  await beforeEpochSocket.joined(0);
+  const expected = {seedHash: hash(seed), heads: []};
+  const publication = {expected, seedHash: latestHash, root: [["000000000000000a", 5]], resources: manifest, attachments: [replacement]};
+  assert.equal((await publicationCall(epochBase + "/epoch", epochRoom.capability, "POST", {
+    ...publication, expected: {...expected, heads: [["0000000000000001", 1]]},
+  })).status, 409);
+  assert.equal(hash(new Uint8Array(await (await publicationCall(epochBase + "/seed", epochRoom.capability)).arrayBuffer())), hash(seed));
+  assert.equal((await (await publicationCall(epochBase + "/blobs", epochRoom.capability)).json()).length, 1);
+  assert.equal((await publicationCall(epochBase + "/epoch", epochRoom.capability, "POST", publication)).status, 200);
+  assert.equal((await beforeEpochSocket.next()).code, 6, "old epoch connections must refresh before pushing");
+  const staleEpochSocket = await socket("203.0.113.32", epochBase, epochRoom.capability);
+  staleEpochSocket.ws.send(hello());
+  assert.equal((await staleEpochSocket.next()).code, 6, "a new connection cannot push without the current seed root");
+  assert.equal(hash(new Uint8Array(await (await publicationCall(epochBase + "/seed", epochRoom.capability)).arrayBuffer())), latestHash);
+  assert.deepEqual(await (await publicationCall(epochBase + "/blobs", epochRoom.capability)).json(), [replacement]);
+  const currentEpoch = await (await publicationCall(epochBase + "/epoch", epochRoom.capability)).json();
+  assert.deepEqual(currentEpoch, {seedHash: latestHash, root: publication.root, heads: publication.root});
+  assert.equal((await publicationCall(epochBase + "/epoch", epochRoom.capability, "POST", publication)).status, 200,
+    "a lost publication receipt can be retried");
+  assert.equal((await publicationCall(epochBase + "/seed?hash=" + hash(seed), epochRoom.capability)).status, 409,
+    "a raced seed read does not return a different epoch");
+  const abandonedSeed = new Uint8Array(512).fill(20), abandonedSeedHash = hash(abandonedSeed);
+  const abandonedLeaseBlob = new Uint8Array([20, 21, 22]), abandonedLeaseBlobHash = hash(abandonedLeaseBlob);
+  assert.equal((await releaseCall(epochBase + "/epochs/" + abandonedSeedHash, epochRoom.capability, "PUT", abandonedSeed)).status, 200);
+  assert.equal((await releaseCall(epochBase + "/epochs/" + abandonedSeedHash + "/blobs/" + abandonedLeaseBlobHash, epochRoom.capability, "PUT", abandonedLeaseBlob, {
+    "Content-Type": "application/octet-stream", "Content-Length": String(abandonedLeaseBlob.length),
+  })).status, 200);
+  assert.equal((await releaseCall(epochBase + "/epochs/" + abandonedSeedHash, epochRoom.capability, "DELETE")).status, 200,
+    "a losing candidate can release its slot immediately instead of blocking maintenance for ten minutes");
+  assert.equal(await bucket.get(`${epochRoom.room}/epochs/${abandonedSeedHash}`), null);
+  assert.equal(await bucket.get(`${epochRoom.room}/blobs/${abandonedLeaseBlobHash}`), null);
+  assert.equal((await releaseCall(epochBase + "/epochs/" + abandonedSeedHash, epochRoom.capability, "DELETE")).status, 200);
+  assert.equal((await releaseCall(epochBase + "/epochs/" + latestHash, epochRoom.capability, "DELETE")).status, 409,
+    "lost publication acknowledgments cannot cause cleanup to delete the current seed");
+  assert.equal(hash(new Uint8Array(await (await releaseCall(epochBase + "/seed", epochRoom.capability)).arrayBuffer())), latestHash);
+  const pending = new Uint8Array(512).fill(18), pendingHash = hash(pending);
+  assert.equal((await expiryCall(epochBase + "/epochs/" + pendingHash, epochRoom.capability, "PUT", pending)).status, 200);
+  const otherPending = new Uint8Array(512).fill(19), otherHash = hash(otherPending);
+  assert.equal((await expiryCall(epochBase + "/epochs/" + otherHash, epochRoom.capability, "PUT", otherPending)).status, 200);
+  const abandoned = new Uint8Array([9, 8, 7]), abandonedHash = hash(abandoned);
+  for (const stage of [pendingHash, otherHash]) {
+    assert.equal((await expiryCall(epochBase + "/epochs/" + stage + "/blobs/" + abandonedHash, epochRoom.capability, "PUT", abandoned, {
+      "Content-Type": "application/octet-stream", "Content-Length": String(abandoned.length),
+    })).status, 200);
+  }
+  assert.equal((await expiryCall(epochBase + "/epochs/" + pendingHash + "/blobs/" + replacement.hash, epochRoom.capability, "PUT", replacementBlob, replacementHeaders)).status, 200);
+  // One candidate cannot reserve more raw blob bytes than the maximum seed size.
+  for (const id of ["d".repeat(64), "e".repeat(64)])
+    await epochSql("INSERT INTO epoch_blobs VALUES(?,?,?)", [otherHash, id, JSON.stringify({ ...replacement, key: id, hash: id, size: 8388608 })]);
+  assert.equal((await expiryCall(epochBase + "/epochs/" + otherHash + "/blobs/" + replacement.hash, epochRoom.capability, "PUT", replacementBlob, replacementHeaders)).status, 413);
+  await epochSql("DELETE FROM epoch_blobs WHERE id IN (?,?)", ["d".repeat(64), "e".repeat(64)]);
+  await epochSql("UPDATE epoch_seeds SET expires=0 WHERE hash=?", [pendingHash]);
+  await epochStub.fetch("https://test/__test/alarm", {method:"POST"});
+  assert.equal(await bucket.get(`${epochRoom.room}/epochs/${pendingHash}`), null, "expired unpublished seeds are reclaimed");
+  assert.ok(await bucket.get(`${epochRoom.room}/blobs/${abandonedHash}`), "another unexpired stage keeps the shared immutable blob");
+  await epochSql("UPDATE epoch_seeds SET expires=0 WHERE hash=?", [otherHash]);
+  await epochStub.fetch("https://test/__test/alarm", {method:"POST"});
+  assert.equal(await bucket.get(`${epochRoom.room}/blobs/${abandonedHash}`), null, "unclaimed staged blobs expire with their last lease");
+  assert.ok(await bucket.get(`${epochRoom.room}/blobs/${replacement.hash}`), "stage expiry never deletes a current epoch's attachment");
+  assert.equal((await publicationCall(epochBase+"/sharing",owner,"DELETE")).status,200);
+  assert.equal((await publicationCall(epochBase+"/seed",epochRoom.capability)).status,403);
+  assert.equal((await publicationCall(epochBase+"/seed",owner)).status,200,"revocation retains private canonical bytes");
+  console.log("Passed: opaque compaction, bounded epochs/resources, socket quotas/refusals, persistent retention and sharing revocation.");
 }

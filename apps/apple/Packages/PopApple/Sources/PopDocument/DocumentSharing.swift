@@ -9,198 +9,173 @@ public func sharingMessage(_ error: Error) -> String {
   if case SharingError.Failed(let message) = error { return message }
   return error.localizedDescription
 }
-
 private final class SharingStatusListener: SharingListener, @unchecked Sendable {
   let update: @Sendable () -> Void
   init(_ update: @escaping @Sendable () -> Void) { self.update = update }
   func changed() { update() }
 }
 
-/// Off-main network work against the existing Rust document owner.
-private actor SharingDriver {
-  let owner: NativeOwner
-  let document: String
-  var credential: String?
-  var client: NativeSharing?
-  var listener: SharingStatusListener?
-  var accountPhase: SharingPhase?
-  init(owner: NativeOwner, document: String) {
-    self.owner = owner
-    self.document = document
-  }
-  func observe(_ listener: SharingStatusListener) {
-    self.listener = listener
-    client?.listen(listener: listener)
-  }
-  /// Recovery asks the relay about this document, so it runs only for one that can have a link:
-  /// a saved credential, or a library copy that may have been shared from another device.
-  func refresh(token: String?, library: Bool = false, reconnect: Bool = false) throws -> SharingStatus? {
-    var saved = try SharingCredentials.read(document)
-    var recoveryError: Error?
-    accountPhase = nil
-    if let token, saved != nil || library {
-      do {
-        let recovery = try sharingRecover(owner: owner, token: token)
-        accountPhase = recovery.phase
-        if let recovered = recovery.credential {
-          saved = recovered
-          try SharingCredentials.write(recovered, document: document)
-        }
-      } catch { recoveryError = error }
-    }
-    if saved != credential || reconnect {
-      client?.pause()
-      client = nil
-      credential = nil
-      if let saved {
-        let restored = try NativeSharing.restore(owner: owner, credential: saved)
-        if let listener { restored.listen(listener: listener) }
-        client = restored
-        credential = saved
-        try restored.connect()
-      }
-    }
-    client?.setCreator(creator: accountPhase != nil)
-    if let recoveryError { throw recoveryError }
-    return status()
-  }
-  func status() -> SharingStatus? {
-    if accountPhase == .ended {
-      return SharingStatus(pauseKind: nil, phase: .ended, detail: "Sharing ended", link: nil, creator: true)
-    }
-    if accountPhase == .preparing {
-      return SharingStatus(
-        pauseKind: nil,
-        phase: .preparing, detail: "Sharing upload is incomplete. Try starting the live link again.", link: nil,
-        creator: true)
-    }
-    if let client { return client.status() }
-    guard let phase = accountPhase else { return nil }
-    return SharingStatus(
-      pauseKind: nil,
-      phase: phase,
-      detail: phase == .ended ? "Sharing ended" : "Sharing upload is incomplete. Try starting the live link again.",
-      link: nil,
-      creator: true)
-  }
-  func start(token: String) throws -> SharingStatus? {
-    client?.pause()
-    let published = try sharingCreate(owner: owner, token: token)
-    try SharingCredentials.write(published, document: document)
-    return try refresh(token: token, reconnect: true)
-  }
-  func pause() {
-    client?.pause()
-    client = nil
-    credential = nil
-  }
-  func stop(token: String) throws -> SharingStatus? {
-    if let client, accountPhase != .preparing {
-      let saved = try client.stop(token: token)
-      try SharingCredentials.write(saved, document: document)
-      credential = saved
-    } else {
-      try sharingStopDocument(owner: owner, token: token)
-    }
-    accountPhase = .ended
-    return status()
-  }
-}
-
+/// Sharing is an access setting on the same persistent cloud document.
+/// Rust owns the connection; the host supplies identity and presents its status.
 @MainActor public final class DocumentSharing: ObservableObject {
   @Published public private(set) var status: SharingStatus?
+  @Published public private(set) var link: String?
+  @Published public private(set) var sharingEnabled = false
   @Published public private(set) var error: String?
   @Published public private(set) var busy = false
   @Published public private(set) var acting = false
-  private let driver: SharingDriver
+  private let owner: NativeOwner
+  private let file: URL
   private let document: String
+  private var client: NativeSharing?
+  private var listener: SharingStatusListener?
   private var active = true
-  private var pendingRefresh = false
+  private var managed = false
+  private var generation: UInt64 = 0
+  private var work: Task<Void, Never>?
   private var triggers: AnyCancellable?
+  private var discoveredRecovery: String?
   init(owner: DocumentOwner) {
+    self.owner = owner.native
+    file = owner.file.url
     document = owner.documentID ?? ""
-    driver = SharingDriver(owner: owner.native, document: document)
+    managed = PopLibrary.shared.entry(at: file)?.localOnly == false
     triggers = NotificationCenter.default.publisher(for: .popSharingAccountChanged)
       .merge(with: NotificationCenter.default.publisher(for: .popSharingForeground))
       .sink { [weak self] _ in Task { @MainActor [weak self] in self?.refresh() } }
     resume()
   }
+  public func openRecovery() {
+    guard let path = status?.recoveryPath else { return }
+    NotificationCenter.default.post(name: .popOpenSharingRecovery, object: URL(fileURLWithPath: path))
+  }
   public func resume() {
     active = true
-    let listener = SharingStatusListener { [weak self] in
-      Task { @MainActor [weak self] in
-        guard let self, self.active, !self.busy else { return }
-        self.status = await self.driver.status()
-      }
-    }
-    Task { await driver.observe(listener) }
     refresh()
   }
-  public func refresh() {
-    guard !busy else {
-      pendingRefresh = true
-      return
-    }
-    run(acting: false) {
-      let token = await SharingAccount.shared.recoveryToken()
-      return try await self.driver.refresh(token: token, library: self.inLibrary)
-    }
-  }
-  private var inLibrary: Bool { PopLibrary.shared.entries.contains { $0.id == document } }
-  public func pause() async {
+  public func pause() async throws {
     active = false
-    await driver.pause()
+    generation += 1
+    work?.cancel()
+    do {
+      if managed { try await PopLibrary.shared.pauseDocument(id: document) } else { client?.pause() }
+    } catch {
+      active = true
+      throw error
+    }
+    client = nil
+    busy = false
+    acting = false
   }
-  /// Returns false when another sharing operation is still running.
-  @discardableResult public func create() -> Bool {
-    run {
-      let token = try await SharingAccount.shared.token()
-      return try await self.driver.start(token: token)
+  public func refresh() {
+    guard active else { return }
+    generation += 1
+    work?.cancel()
+    acting = false
+    let current = generation
+    work = Task {
+      busy = true
+      defer { if current == generation { busy = false } }
+      do {
+        managed = managed || PopLibrary.shared.entry(at: file)?.localOnly == false
+        if managed {
+          guard SharingAccount.shared.signedIn else {
+            client = nil
+            return
+          }
+          try PopLibrary.register(owner: owner)
+          await PopLibrary.shared.syncNow()
+          guard current == generation, active, !Task.isCancelled else { return }
+          client = PopLibrary.shared.connection(id: document)
+          let access = try await PopLibrary.shared.access(id: document)
+          guard current == generation, active else { return }
+          sharingEnabled = access.sharing
+          link = access.role == .owner ? try sharingLink(access: access) : nil
+        } else if let credential = try SharingCredentials.read(document) {
+          if client == nil {
+            let owner = owner
+            let restored = try await PopPreparation.run {
+              try NativeSharing.restore(
+                owner: owner, credential: credential,
+                stateDirectory: SharingLinks.stateDirectory())
+            }
+            guard current == generation, active else {
+              restored.pause()
+              return
+            }
+            client = restored
+            try restored.connect()
+          }
+          sharingEnabled = true
+        }
+        observe()
+        updateStatus()
+        error = nil
+      } catch { if current == generation { self.error = sharingMessage(error) } }
     }
   }
-  public func retry() {
-    run {
-      let token = await SharingAccount.shared.recoveryToken()
-      return try await self.driver.refresh(token: token, library: self.inLibrary, reconnect: true)
+  private func observe() {
+    let callback = SharingStatusListener { [weak self] in
+      Task { @MainActor [weak self] in
+        guard let self, self.active else { return }
+        self.updateStatus()
+      }
+    }
+    listener = callback
+    client?.listen(listener: callback)
+  }
+  private func updateStatus() {
+    status = client?.status()
+    if !managed { link = status?.link }
+    if let path = status?.recoveryPath, path != discoveredRecovery {
+      discoveredRecovery = path
+      NotificationCenter.default.post(name: .popSharingRecoveryAvailable, object: URL(fileURLWithPath: path))
     }
   }
-  public func stop() {
-    run {
-      let token = try await SharingAccount.shared.token()
-      return try await self.driver.stop(token: token)
-    }
-  }
-  @discardableResult
-  private func run(acting: Bool = true, _ operation: @escaping @MainActor () async throws -> SharingStatus?) -> Bool {
+  @discardableResult public func create() -> Bool { setSharing(true) }
+  public func stop() { _ = setSharing(false) }
+  public func retry() { refresh() }
+  @discardableResult private func setSharing(_ enabled: Bool) -> Bool {
     guard active, !busy else { return false }
+    generation += 1
+    let current = generation
     busy = true
-    self.acting = acting
+    acting = true
     error = nil
-    Task {
+    work = Task {
       defer {
-        busy = false
-        self.acting = false
-        if pendingRefresh {
-          pendingRefresh = false
-          refresh()
+        if current == generation {
+          busy = false
+          acting = false
         }
       }
       do {
-        let next = try await operation()
-        if active { status = next }
-      } catch {
-        if active {
-          self.error = sharingMessage(error)
-          status = await driver.status()
+        if enabled && !managed {
+          try await PopLibrary.shared.enableSync(source: file, title: file.deletingPathExtension().lastPathComponent)
+          guard current == generation, active else { return }
+          managed = true
         }
-      }
+        let access = try await PopLibrary.shared.sharing(id: document, enabled: enabled)
+        guard current == generation, active else { return }
+        sharingEnabled = access.sharing
+        link = access.role == .owner ? try sharingLink(access: access) : nil
+        client = PopLibrary.shared.connection(id: document)
+        observe()
+        updateStatus()
+      } catch { if current == generation { self.error = sharingMessage(error) } }
     }
     return true
   }
+  public static func installLibraryServices() {
+    PopLibrary.shared.start()
+    SharingAccount.shared.configure()
+  }
 
-  /// Resolve the canonical local file, including an already-open document. Joining
-  /// never imports a duplicate or requires an iCloud library.
   public static func join(_ link: String, candidates: [URL] = []) async throws -> URL {
+    if SharingAccount.shared.signedIn {
+      let entry = try await PopLibrary.shared.join(link: link)
+      return URL(fileURLWithPath: entry.path)
+    }
     let document = try await PopPreparation.run { try sharingDocument(link: link) }
     let live = DocumentSession.sharedSession(document: document)
     let nativeOwner = live?.owner.native
@@ -224,12 +199,12 @@ private actor SharingDriver {
         .appendingPathComponent("pop/SharedDocuments/\(document).pop")
     }
     // Stop the old transport before rebinding this same owner to a new room.
-    await live?.sharing?.pause()
+    try await live?.sharing?.pause()
     do {
       if nativeOwner == nil {
         try await PopPreparation.run {
           if !FileManager.default.fileExists(atPath: target.path) {
-            try sharingInstall(path: target.path, link: link)
+            try sharingInstall(path: target.path, link: link, stateDirectory: SharingLinks.stateDirectory())
           }
         }
       }

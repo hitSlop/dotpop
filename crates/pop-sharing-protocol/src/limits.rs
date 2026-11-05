@@ -8,7 +8,7 @@ pub const ATTACHMENT_COUNT: usize = 256;
 /// Host-owned Firebase ID tokens; these never enter a document or authored page.
 pub const IDENTITY_TOKEN_BYTES: usize = 16 * 1024;
 /// Account and relay admission policy, separate from document acceptance.
-pub const ACCOUNT_ROOMS: usize = 10;
+pub const ACCOUNT_DOCUMENTS: usize = 10;
 pub const ROOM_CONNECTIONS: usize = 32;
 
 /// Retained update bytes, excluding the full-history base.
@@ -25,12 +25,6 @@ pub const COMPACT_AFTER_RECORDS: usize = 8_192;
 pub const SOCKET_PUSH_BYTES_PER_MINUTE: usize = 8 << 20;
 /// One socket's incoming pushes per minute.
 pub const SOCKET_PUSHES_PER_MINUTE: usize = 1_800;
-/// Live rooms expire after this many days without activity or sockets.
-pub const ROOM_IDLE_DAYS: u64 = 90;
-/// Identifier-free ended tombstones are retained for this many days.
-pub const ENDED_TOMBSTONE_DAYS: u64 = 30;
-/// Covered records remain in private archives for this many days.
-pub const COMPACTED_ARCHIVE_DAYS: u64 = 14;
 /// Maximum sockets admitted from one client IP in a room.
 pub const ROOM_IP_CONNECTIONS: usize = 8;
 // Even a base with the maximum peer headers fitting in CONTROL_BYTES stays in one frame.
@@ -48,3 +42,12 @@ pub const PING_MS: u64 = 20_000;
 /// Reconnect delays start here and double up to `BACKOFF_MAX_MS`.
 pub const BACKOFF_MIN_MS: u64 = 250;
 pub const BACKOFF_MAX_MS: u64 = 8_000;
+
+/// Unpublished immutable epoch seeds are quota bounded and expire after ten minutes.
+pub const EPOCH_STAGE_COUNT: usize = 2;
+pub const EPOCH_STAGE_TTL_MS: u64 = 600_000;
+/// Referenced raw attachments must fit inside the accepted staged SQLite seed.
+pub const EPOCH_STAGE_BLOB_BYTES: usize = crate::SEED_BYTES;
+/// Bounded creator-only frozen-history page. A single base may exceed the byte target.
+pub const HANDOFF_PAGE_RECORDS: usize = 32;
+pub const HANDOFF_PAGE_BYTES: usize = 1 << 20;

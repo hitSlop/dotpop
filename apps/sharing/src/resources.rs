@@ -17,8 +17,7 @@ fn cookie(req: &Request) -> Option<(String, String)> {
     let text = req.headers().get("Cookie").ok().flatten()?;
     let value = text.split(';').filter_map(|c| c.trim().split_once('=')).find(|(k, _)| *k == "__Host-pop-resource")?.1;
     let (room, token) = value.split_once('.')?;
-    (room.len() == 32 && room.bytes().all(|c| c.is_ascii_hexdigit()) && resource_types::hash_id(token))
-        .then(|| (room.into(), token.into()))
+    (pop_sharing_protocol::valid_copy(room) && resource_types::hash_id(token)).then(|| (room.into(), token.into()))
 }
 
 /// Called before ordinary relay CORS/gate handling. Resource cookies authorize only reads.
@@ -50,7 +49,7 @@ pub(super) async fn entry(mut req: Request, env: Env) -> Result<Response> {
     }
     let room = if session {
         let parts: Vec<_> = req.path().split('/').map(str::to_owned).collect();
-        if parts.len() != 3 || parts[2].len() != 32 {
+        if parts.len() != 3 || !pop_sharing_protocol::valid_copy(&parts[2]) {
             return denied();
         }
         parts[2].clone()
@@ -69,7 +68,7 @@ pub(super) async fn entry(mut req: Request, env: Env) -> Result<Response> {
     // A service-bound request keeps its original dotpop URL, including the exact host.
     req = req.clone_mut()?;
     req.headers_mut()?.set("X-Resource-Request", "1")?;
-    let mut response = env.durable_object("ROOMS")?.get_by_name(&room)?.fetch_with_request(req).await?;
+    let mut response = env.durable_object("DOCUMENTS")?.get_by_name(&room)?.fetch_with_request(req).await?;
     let headers = response.headers().clone();
     response = response.with_headers(headers);
     response.headers_mut().set("Cache-Control", "no-store")?;
@@ -83,7 +82,7 @@ pub(super) async fn entry(mut req: Request, env: Env) -> Result<Response> {
     Ok(response)
 }
 
-impl SlopRoom {
+impl CloudDocument {
     pub(super) async fn resource_fetch(&self, mut req: Request) -> Result<Response> {
         if self.phase()? == Some(RoomPhase::Ended) {
             return Response::error("Sharing ended", 410);
@@ -93,7 +92,7 @@ impl SlopRoom {
         }
         let host = req.url()?.origin().ascii_serialization();
         if req.path().starts_with("/_resources/") {
-            if req.method() != Method::Post || !self.authorized(&req, false).await? {
+            if req.method() != Method::Post || !self.authorized_guest(&req).await? {
                 return denied();
             }
             let bytes = bounded_body(&mut req, CONTROL_BYTES).await?;
@@ -166,6 +165,9 @@ impl SlopRoom {
                 .range(worker::Range::OffsetWithLength { offset: span.offset, length: span.length })
                 .execute()
                 .await?;
+            if self.phase()? == Some(RoomPhase::Ended) {
+                return Response::error("Sharing ended", 410);
+            }
             let Some(object) = object else {
                 return Response::error("Resource unavailable", 503);
             };
@@ -234,6 +236,18 @@ impl SlopRoom {
         let key = format!("{room}/{}/{id}", if blob { "blobs" } else { "assets" });
         let bucket = self.env.bucket("SEEDS")?;
         if req.method() == Method::Put {
+            // Serialize blob uploads with epoch swaps; Stop/freeze remain independent.
+            let _upload = if blob { Some(self.uploads.lock().await) } else { None };
+            if blob {
+                self.sweep_epochs(room).await?;
+                if !self.authorized_guest(req).await? {
+                    return Response::error("Access revoked", 403);
+                }
+            }
+            let epoch = self.text("seed_hash")?;
+            if self.phase()? == Some(RoomPhase::Ended) {
+                return Response::error("Sharing ended", 410);
+            }
             let item = if blob {
                 Resource {
                     key: id.into(),
@@ -274,11 +288,21 @@ impl SlopRoom {
             }
             // Reading the body yielded to Stop. Refuse before beginning a new write;
             // if Stop races the R2 write itself, remove that late object afterwards.
-            if self.phase()? == Some(RoomPhase::Ended) {
-                return Response::error("Sharing ended", 410);
+            if self.phase()? == Some(RoomPhase::Ended) || (blob && !self.authorized_guest(req).await?) {
+                return Response::error("Access revoked", 403);
+            }
+            if blob {
+                // Register bounded cleanup before R2: a crash after PUT must not
+                // leave bytes outside both quota inventory and garbage tracking.
+                self.sql.exec("INSERT OR IGNORE INTO epoch_garbage VALUES(?)", vec![key.clone().into()])?;
+                self.schedule_cleanup(60_000).await?;
+                self.state.storage().sync().await?;
             }
             bucket.put(key, body).sha256(decode_hex(id)?).execute().await?;
-            if self.phase()? == Some(RoomPhase::Ended) {
+            if self.phase()? == Some(RoomPhase::Ended)
+                || self.text("seed_hash")? != epoch
+                || (blob && !self.authorized_guest(req).await?)
+            {
                 bucket.delete(format!("{room}/{}/{id}", if blob { "blobs" } else { "assets" })).await?;
                 return Response::error("Sharing ended", 410);
             }
@@ -297,12 +321,16 @@ impl SlopRoom {
                     "INSERT OR IGNORE INTO resource_blobs VALUES(?,?)",
                     vec![id.into(), serde_json::to_string(&item)?.into()],
                 )?;
+                self.sql.exec("DELETE FROM epoch_garbage WHERE key=?", vec![format!("{room}/blobs/{id}").into()])?;
                 self.state.storage().sync().await?;
             }
             return Response::ok("stored");
         }
         if req.method() == Method::Get {
             if let Some(object) = bucket.get(key).execute().await? {
+                if self.phase()? == Some(RoomPhase::Ended) || !self.authorized_guest(req).await? {
+                    return Response::error("Sharing ended", 410);
+                }
                 return Response::from_body(object.body().ok_or_else(|| fail("Missing body"))?.response_body()?);
             }
             return Response::error("Not found", 404);

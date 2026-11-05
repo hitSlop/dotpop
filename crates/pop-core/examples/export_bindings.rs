@@ -12,19 +12,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pop_core::browser_wire::BrowserEvent::export_all(&config)?;
     pop_sharing_protocol::http::CreateRoom::export_all(&config)?;
     pop_sharing_protocol::http::CreatedRoom::export_all(&config)?;
-    pop_sharing_protocol::http::AccountRoom::export_all(&config)?;
     pop_sharing_protocol::http::RoomInfo::export_all(&config)?;
+    pop_sharing_protocol::document::DocumentEntry::export_all(&config)?;
+    pop_sharing_protocol::document::RegisteredDocument::export_all(&config)?;
+    pop_sharing_protocol::document::RegisteredDocuments::export_all(&config)?;
+    pop_sharing_protocol::document::DocumentMetadata::export_all(&config)?;
+
+    pop_sharing_protocol::document::AccessState::export_all(&config)?;
+    pop_sharing_protocol::document::UpdateDocument::export_all(&config)?;
+    pop_sharing_protocol::document::JoinDocument::export_all(&config)?;
+
+    pop_sharing_protocol::lifecycle::EpochState::export_all(&config)?;
+    pop_sharing_protocol::lifecycle::PublishEpoch::export_all(&config)?;
+    pop_sharing_protocol::lifecycle::StagedSeed::export_all(&config)?;
     pop_sharing_protocol::http::ResourceGrant::export_all(&config)?;
     pop_sharing_protocol::http::ApiFailure::export_all(&config)?;
     pop_sharing_protocol::http::ConnectionPlan::export_all(&config)?;
     pop_sharing_protocol::http::SharingControl::export_all(&config)?;
     pop_sharing_protocol::http::SharingEvent::export_all(&config)?;
     pop_core::sync::Pause::export_all(&config)?;
+    pop_core::sync::SyncState::export_all(&config)?;
+    pop_core::sync::Confirmation::export_all(&config)?;
+    pop_sharing_protocol::failure::Failure::export_all(&config)?;
+    pop_sharing_protocol::maintenance::FullState::export_all(&config)?;
+    pop_sharing_protocol::maintenance::Step::export_all(&config)?;
+    pop_sharing_protocol::maintenance::MaintenanceAction::export_all(&config)?;
     pop_sharing_protocol::resources::Manifest::export_all(&config)?;
     EngineRequest::export_all(&config)?;
     EngineReply::export_all(&config)?;
     BuildInput::export_all(&config)?;
-    pop_runner::Job::export_all(&config)?;
+    pop_contracts::evaluator::Job::export_all(&config)?;
     pop_core::widgets::WidgetRenderRequest::export_all(&config)?;
     pop_core::capture::ViewRenderRequest::export_all(&config)?;
     Batch::export_all(&config)?;
@@ -58,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         directory.join("media.generated.ts"),
         format!(
             "// Generated from pop-core's media registry. Do not edit.\nexport const MediaTypes: Readonly<Record<string, readonly [string, string]>> = {};\n",
-            serde_json::to_string_pretty(&pop_core::media::build_registry())?,
+            serde_json::to_string_pretty(&pop_contracts::media::build_registry())?,
         ),
     )?;
     Ok(())

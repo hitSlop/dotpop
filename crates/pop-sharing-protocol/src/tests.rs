@@ -51,7 +51,7 @@ fn frozen_http_dtos_and_extra_reply_fields() {
             "EmptyReply" => canonical::<()>(input),
             "CreateRoom" => canonical::<CreateRoom>(input),
             "CreatedRoom" => canonical::<CreatedRoom>(input),
-            "AccountRoom" => canonical::<Option<AccountRoom>>(input),
+            "AccountRoom" => continue, // Retired temporary-room discovery is not an active contract.
             "RoomInit" => canonical::<RoomInit>(input),
             "RoomInfo" => canonical::<RoomInfo>(input),
             "RoomPhase" => canonical::<RoomPhase>(input),
@@ -84,10 +84,9 @@ fn frozen_http_dtos_and_extra_reply_fields() {
         }
     }
     let link = include_str!("../tests/fixtures/v1/invitation.txt").trim();
-    let invitation = Invitation::parse(link).unwrap();
-    assert_eq!(invitation.room, "a".repeat(32));
-    assert_eq!(invitation.capability, "b".repeat(64));
-    assert_eq!(invitation.link().unwrap(), link);
+    assert!(Invitation::parse(link).is_err(), "temporary room links do not name persistent documents");
+    let invitation = Invitation { room: "00000000-0000-4000-8000-000000000001".into(), capability: "b".repeat(64) };
+    assert_eq!(Invitation::parse(&invitation.link().unwrap()).unwrap().room, invitation.room);
 }
 #[test]
 fn frozen_binary_codecs() {
@@ -105,6 +104,13 @@ fn frozen_binary_codecs() {
         assert_eq!(decoded, frame);
         assert_eq!(envelope::encode(decoded).unwrap(), bytes);
     }
+}
+#[test]
+fn malformed_varint_overflow_is_refused() {
+    let mut bytes = vec![7, 1]; // Error frame, code 1, then an overflowing message length
+    bytes.extend([0x80; 9]);
+    bytes.extend([0x02]);
+    assert!(Frame::decode(&bytes).is_err());
 }
 #[test]
 fn unknown_variants_fail_closed_but_error_codes_remain_opaque() {

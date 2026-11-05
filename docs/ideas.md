@@ -366,22 +366,28 @@ Windows.
 
 ### Sync between your own devices
 
-Apple devices use the CloudKit Synced Library ([architecture](architecture.md#synced-library)).
-For platforms without CloudKit, a person's own devices could use the same room model as people
-collaborating. Each keeps a `.pop` replica and its local writer lease, edits offline and
-merges through the relay when it reconnects. Replicate Loro updates, not SQL rows or a
-second JSON document. Attachments
-travel separately by hash, so installed data and a complete exportable file are distinct
-states until its blobs arrive.
+The approved [cloud document design](cloud-documents.md) replaces CloudKit. Native
+clients maintain personal Firestore references after Cloudflare confirms document
+uploads. Persistent Document DOs and R2 serve both private sync and collaboration.
+Other native platforms need account/catalog adapters rather than another document engine.
+Closed-file CLI changes currently sync on the next native open; autonomous background
+sync for closed documents remains an extension to consider.
 
 ### Realtime collaboration on Durable Objects
 
-The selected direction is local owners and a byte relay;
-[architecture](architecture.md#sync) describes it, and the [roadmap](roadmap.md#later)
-tracks what remains. What stays open:
+Private and collaborative documents share one UUID and cloud location. Enabling or
+revoking an invitation changes access without moving bytes between cloud providers.
+The client-written library is intentionally eventual: revoked references and stale
+shared titles refresh when access is checked. The DO remains the permission authority.
 
-- **Presence:** cursors and who is here, probably through Loro's `EphemeralStore`, never
-  saved.
+### Shared-history epoch maintenance
+
+The [architecture](architecture.md#relay) and [cloud specification](cloud-documents.md)
+own current bounded snapshots, update tails, temporary staging and offline recovery.
+The former CloudKit/relay handoff and final-snapshot receipt proposals are superseded;
+they are not requirements for the persistent document service.
+
+### Per-person persistent preferences
 
 Per-person persistent preferences remain a separate `s.local(node)` proposal. Today,
 keep temporary view state in Svelte and document content in fields. A new local-field
