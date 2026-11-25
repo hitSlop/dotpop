@@ -2,7 +2,7 @@ import { definePop } from "@hitslop/pop";
 
 export default definePop({
   slug: "countdown-milestones",
-  title: "Countdown & Milestones",
+  title: "Countdown",
   description: "A playful desk-calendar countdown with editable milestones and a date worth remembering.",
   author: { name: "pop", url: "https://dotpop.click" },
   categories: ["utilities", "productivity"],

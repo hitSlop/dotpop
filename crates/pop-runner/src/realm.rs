@@ -13,10 +13,18 @@ impl Realm {
         if self.interrupted.get() { Err(Error::Timeout) } else { result }
     }
 }
-pub(crate) fn create(mut interrupted: impl FnMut() -> bool + 'static) -> Result<Realm, Error> {
+pub(crate) fn create(interrupted: impl FnMut() -> bool + 'static) -> Result<Realm, Error> {
+    create_with_limits(256 << 20, 512 << 10, interrupted)
+}
+
+pub(crate) fn create_with_limits(
+    memory_limit: usize,
+    max_stack_size: usize,
+    mut interrupted: impl FnMut() -> bool + 'static,
+) -> Result<Realm, Error> {
     let runtime = Runtime::new().map_err(|e| Error::Spawn(e.to_string()))?;
-    runtime.set_memory_limit(256 << 20);
-    runtime.set_max_stack_size(512 << 10);
+    runtime.set_memory_limit(memory_limit);
+    runtime.set_max_stack_size(max_stack_size);
     let triggered = Rc::new(Cell::new(false));
     let flag = triggered.clone();
     runtime.set_interrupt_handler(Some(Box::new(move || {

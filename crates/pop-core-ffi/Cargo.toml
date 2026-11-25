@@ -18,7 +18,7 @@ pop-cloud = { path = "../pop-cloud" }
 pop-sharing-protocol = { path = "../pop-sharing-protocol" }
 pop-core = { path = "../pop-core" }
 pop-storage = { path = "../pop-storage" }
-pop-runtime = { path = "../pop-runtime" }
+pop-runtime = { path = "../pop-runtime", features = ["in-process"] }
 # Without its default `cargo-metadata`, which only the bindings generator uses: every host
 # build then shares one dependency graph. The generator is installed on its own
 # (crates/README.md).

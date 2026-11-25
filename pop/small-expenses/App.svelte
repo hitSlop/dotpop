@@ -3,7 +3,8 @@
   import "./styles.css";
   import { Checkbox, Tabs } from "bits-ui";
   import { bindText, getDocument } from "@hitslop/pop/svelte";
-  import { tick } from "svelte";
+  import { onDestroy, tick } from "svelte";
+  import { bindPolkaHandlers, minimizePolkaKeyboard, showPolkaKeyboard, syncPolkaDeck } from "../_shared/polka";
   import schema from "./schema";
   import { addItem, clearNote, expenseView, formatMoney, moveItem, parseEntry, removeItem, settleItems } from "./items";
 
@@ -35,6 +36,74 @@
     await doc.change(tx=>settleItems(tx, settling));
     selected=[];
   }
+
+  let inputMode = $state<"closed" | "qwerty" | "decimal">("closed");
+
+  onDestroy(bindPolkaHandlers({
+    onSubmit: async (text) => {
+      const clean = text.trim();
+      if (!clean) return;
+      if (inputMode === "decimal") {
+        const entry = parseEntry(merchant.trim() || "Expense", clean, note);
+        if ("error" in entry) { error = entry.error; return; }
+        error = "";
+        await doc.change(tx => addItem(tx, entry));
+        merchant = ""; amount = ""; note = "";
+        inputMode = "closed";
+        minimizePolkaKeyboard();
+        return;
+      }
+      // Support quick "Coffee 5.50" or "$5.50 Coffee" one-line entry.
+      const trailing = clean.match(/^(.+?)\s+\$?(\d+(?:\.\d{1,2})?)$/);
+      const leading = clean.match(/^\$?(\d+(?:\.\d{1,2})?)\s+(.+)$/);
+      const m = trailing ? trailing[1]!.trim() : leading ? leading[2]!.trim() : clean;
+      const a = trailing ? trailing[2]! : leading ? leading[1]! : "0.00";
+      const entry = parseEntry(m, a, "");
+      if ("error" in entry) { error = entry.error; return; }
+      error = "";
+      await doc.change(tx => addItem(tx, entry));
+      inputMode = "closed";
+      minimizePolkaKeyboard();
+    },
+    onAction: (id) => {
+      if (id === "cur-CAD" || id === "cur-USD" || id === "cur-EUR") {
+        currency.value = id.slice(4) as "CAD" | "USD" | "EUR";
+      } else if (id === "quick-add") {
+        inputMode = inputMode === "qwerty" ? "closed" : "qwerty";
+        if (inputMode !== "closed") showPolkaKeyboard();
+        else minimizePolkaKeyboard();
+      } else if (id === "quick-pad") {
+        inputMode = inputMode === "decimal" ? "closed" : "decimal";
+        if (inputMode !== "closed") showPolkaKeyboard();
+        else minimizePolkaKeyboard();
+      } else if (id === "settle-selected" && selectedIDs.length) {
+        void settle();
+      }
+    },
+  }));
+
+  $effect(() => {
+    const cur = doc.current.currency;
+    const active = inputMode !== "closed";
+    syncPolkaDeck({
+      field: inputMode === "decimal"
+        ? { kind: "entry", placeholder: "0.00", submit: { label: "Log", button: "check" }, canSubmit: true }
+        : inputMode === "qwerty"
+          ? { kind: "entry", placeholder: "Coffee 5.50", submit: { label: "Add", button: "check" }, canSubmit: true }
+          : { kind: "none" },
+      input: active ? "keys" : "none",
+      minimizesOnEntry: !active,
+      keyboard: { kind: inputMode === "closed" ? "none" : inputMode },
+      bar: [
+        { id: "quick-add", title: "Add", symbol: "plus.circle.fill", selected: inputMode === "qwerty" },
+        { id: "quick-pad", title: "123", symbol: "number.square", selected: inputMode === "decimal" },
+        { id: "cur-CAD", title: "CAD", selected: cur === "CAD", group: { id: "currency", title: "Currency", style: "segment" } },
+        { id: "cur-USD", title: "USD", selected: cur === "USD", group: { id: "currency", title: "Currency", style: "segment" } },
+        { id: "cur-EUR", title: "EUR", selected: cur === "EUR", group: { id: "currency", title: "Currency", style: "segment" } },
+        ...(selectedIDs.length ? [{ id: "settle-selected", title: `Settle (${selectedIDs.length})`, symbol: "checkmark.circle", role: "primary" as const }] : []),
+      ],
+    });
+  });
 </script>
 
 <main class="expenses-paper">

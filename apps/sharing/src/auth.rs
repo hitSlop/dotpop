@@ -1,5 +1,8 @@
-//! Firebase identity verification, independent of room permissions. Only Google's
-//! fixed certificate endpoint supplies keys; JWT headers never select a remote URL.
+//! Caller identity verification, independent of room permissions.
+//! Accepts either:
+//! 1. Self-issued RFC 8037 `EdDSA` (Ed25519) device-keypair JWTs (`sub = "pk:<base64url-32-byte-pubkey>"`)
+//!    so any app importing `PopKit` gets zero-config live collaboration without hardcoded app allowlists.
+//! 2. Firebase `RS256` ID tokens verified exclusively against Google's fixed certificate endpoint.
 #[cfg(target_arch = "wasm32")]
 use crate::limits::CERTIFICATE_CACHE_SECONDS;
 use crate::limits::{IDENTITY_FIELD_BYTES, IDENTITY_LEEWAY_SECONDS};
@@ -8,6 +11,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const TOKEN_BYTES: usize = pop_sharing_protocol::limits::IDENTITY_TOKEN_BYTES;
+/// Maximum lifetime for a self-issued `EdDSA` device JWT (15 minutes).
+const EDDSA_MAX_TTL_SECONDS: u64 = 900;
+/// Base64url-encoded 32-byte Ed25519 public key length without padding (`ceil(32 * 4 / 3) == 43`).
+const ED25519_PUB_B64URL_LEN: usize = 43;
+
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum IdentityError {
@@ -25,6 +33,91 @@ pub(crate) struct Claims {
 #[derive(Clone, Deserialize)]
 pub(crate) struct Firebase {
     sign_in_provider: String,
+}
+#[derive(Clone, Deserialize)]
+struct EdDsaClaims {
+    sub: String,
+    exp: u64,
+    iat: u64,
+}
+
+pub(crate) fn token_algorithm(token: &str) -> Result<Algorithm, &'static str> {
+    if token.len() > TOKEN_BYTES {
+        return Err("Invalid identity");
+    }
+    decode_header(token).map(|h| h.alg).map_err(|_| "Invalid identity")
+}
+
+/// Verifies a self-issued `EdDSA` JWT whose `sub` carries `"pk:<base64url-32-byte-ed25519-pubkey>"`.
+/// The signature proves possession of the private key matching `sub`; no remote key fetch or
+/// hardcoded app allowlist is required.
+pub(crate) fn verify_eddsa(token: &str, now: u64) -> Result<VerifiedIdentity, &'static str> {
+    if token.len() > TOKEN_BYTES {
+        return Err("Invalid identity");
+    }
+    let header = decode_header(token).map_err(|_| "Invalid identity")?;
+    if header.alg != Algorithm::EdDSA {
+        return Err("Invalid identity");
+    }
+    // Extract the claimed public key from the unverified payload before cryptographic verification.
+    let mut parts = token.split('.');
+    let (_h, payload_b64, _sig, extra) = (parts.next(), parts.next(), parts.next(), parts.next());
+    let payload_b64 = payload_b64.filter(|_| extra.is_none()).ok_or("Invalid identity")?;
+    let payload_bytes = decode_base64url_nopad(payload_b64).ok_or("Invalid identity")?;
+    let unverified: EdDsaClaims = serde_json::from_slice(&payload_bytes).map_err(|_| "Invalid identity")?;
+    let pub_b64 = unverified
+        .sub
+        .strip_prefix("pk:")
+        .filter(|pk| pk.len() == ED25519_PUB_B64URL_LEN && decode_base64url_nopad(pk).is_some_and(|b| b.len() == 32))
+        .ok_or("Invalid identity")?;
+
+    let key = DecodingKey::from_ed_components(pub_b64).map_err(|_| "Invalid identity")?;
+    let mut policy = Validation::new(Algorithm::EdDSA);
+    policy.set_required_spec_claims(&["exp", "iat", "sub"]);
+    policy.validate_exp = false;
+    policy.validate_aud = false;
+    policy.leeway = IDENTITY_LEEWAY_SECONDS;
+    let claims = decode::<EdDsaClaims>(token, &key, &policy).map_err(|_| "Invalid identity")?.claims;
+
+    if claims.sub != unverified.sub
+        || claims.sub.chars().count() > IDENTITY_FIELD_BYTES
+        || claims.exp <= claims.iat
+        || claims.exp.saturating_sub(claims.iat) > EDDSA_MAX_TTL_SECONDS
+        || claims.exp.saturating_add(IDENTITY_LEEWAY_SECONDS) <= now
+        || claims.iat > now.saturating_add(IDENTITY_LEEWAY_SECONDS)
+    {
+        return Err("Invalid identity");
+    }
+    Ok(VerifiedIdentity { uid: claims.sub, expires: claims.exp })
+}
+
+fn decode_base64url_nopad(input: &str) -> Option<Vec<u8>> {
+    if input.is_empty() || input.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity((input.len() * 3) / 4);
+    let mut buf: u32 = 0;
+    let mut bits: u8 = 0;
+    for byte in input.bytes() {
+        let val: u32 = match byte {
+            b'A'..=b'Z' => (byte - b'A') as u32,
+            b'a'..=b'z' => (byte - b'a' + 26) as u32,
+            b'0'..=b'9' => (byte - b'0' + 52) as u32,
+            b'-' => 62,
+            b'_' => 63,
+            _ => return None,
+        };
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xff) as u8);
+        }
+    }
+    if bits > 0 && (buf & ((1 << bits) - 1)) != 0 {
+        return None;
+    }
+    Some(out)
 }
 pub(crate) fn key_id(token: &str) -> Result<String, &'static str> {
     if token.len() > TOKEN_BYTES {
@@ -155,14 +248,20 @@ mod runtime {
         });
         selected.ok_or(IdentityError::Denied)
     }
-    pub(crate) async fn identity(req: &Request, env: &Env) -> IdentityResult<Claims> {
+    pub(crate) async fn identity(req: &Request, env: &Env) -> IdentityResult<VerifiedIdentity> {
         let header = req.headers().get("Authorization").map_err(|_| IdentityError::Denied)?.unwrap_or_default();
         let token = header.strip_prefix("Bearer ").ok_or(IdentityError::Denied)?;
-        let id = key_id(token).map_err(|_| IdentityError::Denied)?;
-        let project = env.var("FIREBASE_PROJECT").map_err(|_| IdentityError::Unavailable)?.to_string();
         let now = (js_sys::Date::now() / 1000.) as u64;
-        let key = signing_key(&id, now).await?;
-        verify(token, &project, &key, now).map_err(|_| IdentityError::Denied)
+        match token_algorithm(token).map_err(|_| IdentityError::Denied)? {
+            Algorithm::EdDSA => verify_eddsa(token, now).map_err(|_| IdentityError::Denied),
+            Algorithm::RS256 => {
+                let id = key_id(token).map_err(|_| IdentityError::Denied)?;
+                let project = env.var("FIREBASE_PROJECT").map_err(|_| IdentityError::Unavailable)?.to_string();
+                let key = signing_key(&id, now).await?;
+                verify(token, &project, &key, now).map(VerifiedIdentity::from).map_err(|_| IdentityError::Denied)
+            }
+            _ => Err(IdentityError::Denied),
+        }
     }
 }
 #[cfg(target_arch = "wasm32")]
@@ -286,5 +385,48 @@ mod tests {
             verify(&signed, "hitslopapp", &refreshed.cached("rotated", NOW + 30).unwrap().unwrap(), NOW + 30).is_ok()
         );
         assert!(refreshed.cached("current", NOW + 30).unwrap().is_err());
+    }
+
+    #[test]
+    fn eddsa_device_identity_verifies_valid_tokens_and_rejects_forgeries() {
+        // RFC 8410 Section 10.3 test vector (Ed25519 PKCS#8 v1 private key + matching 32-byte public key).
+        let pkcs8_der: [u8; 48] = [
+            0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+            0xd4, 0xee, 0x72, 0xdb, 0xf9, 0x13, 0x58, 0x4a, 0xd5, 0xb6, 0xd8, 0xf1, 0xf7, 0x69, 0xf8, 0xad,
+            0x3a, 0xfe, 0x7c, 0x28, 0xcb, 0xf1, 0xd4, 0xfb, 0xe0, 0x97, 0xa8, 0x8f, 0x44, 0x75, 0x58, 0x42,
+        ];
+        // Matching Ed25519 public key for the RFC 8410 seed above:
+        // 19bf44096984cdfe8541bac167dc3b96c85086aa30b6b6cb0c5c38ad703166e1
+        let pub_b64 = "Gb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE";
+        let sub = format!("pk:{pub_b64}");
+        let enc = EncodingKey::from_ed_der(&pkcs8_der);
+
+        let valid_claims = json!({ "sub": sub, "iat": NOW, "exp": NOW + 600 });
+        let jwt = encode(&Header::new(Algorithm::EdDSA), &valid_claims, &enc).unwrap();
+        assert_eq!(token_algorithm(&jwt).unwrap(), Algorithm::EdDSA);
+        let id = verify_eddsa(&jwt, NOW).unwrap();
+        assert_eq!(id.uid, format!("pk:{pub_b64}"));
+        assert_eq!(id.expires, NOW + 600);
+
+        // Expired token rejected
+        assert!(verify_eddsa(&jwt, NOW + 661).is_err());
+
+        // Overlong TTL (> 900s) rejected
+        let long_ttl = encode(&Header::new(Algorithm::EdDSA), &json!({ "sub": sub, "iat": NOW, "exp": NOW + 901 }), &enc).unwrap();
+        assert!(verify_eddsa(&long_ttl, NOW).is_err());
+
+        // Tampered subject rejected (signature mismatch)
+        let mut parts: Vec<_> = jwt.split('.').map(str::to_owned).collect();
+        let other = encode(
+            &Header::new(Algorithm::EdDSA),
+            &json!({ "sub": "pk:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "iat": NOW, "exp": NOW + 600 }),
+            &enc,
+        ).unwrap();
+        parts[1] = other.split('.').nth(1).unwrap().into();
+        assert!(verify_eddsa(&parts.join("."), NOW).is_err());
+
+        // Non-pk subject rejected
+        let non_pk = encode(&Header::new(Algorithm::EdDSA), &json!({ "sub": "user-123", "iat": NOW, "exp": NOW + 600 }), &enc).unwrap();
+        assert!(verify_eddsa(&non_pk, NOW).is_err());
     }
 }

@@ -47,6 +47,17 @@ impl From<core::Applied> for OwnerApplied {
     }
 }
 #[derive(uniffi::Record)]
+pub struct OwnerCommandResult {
+    pub sequence: u64,
+    pub ids: Vec<String>,
+    pub result_json: String,
+}
+impl From<core::CommandResult> for OwnerCommandResult {
+    fn from(value: core::CommandResult) -> Self {
+        Self { sequence: value.sequence, ids: value.ids, result_json: value.result_json }
+    }
+}
+#[derive(uniffi::Record)]
 pub struct OwnerTheme {
     pub state: ThemeState,
     pub sequence: u64,
@@ -103,6 +114,11 @@ pub trait OwnerStringCompletion: Send + Sync {
     fn failed(&self, failure: Failure);
 }
 #[uniffi::export(callback_interface)]
+pub trait OwnerCommandCompletion: Send + Sync {
+    fn complete(&self, value: OwnerCommandResult);
+    fn failed(&self, failure: Failure);
+}
+#[uniffi::export(callback_interface)]
 pub trait OwnerListener: Send + Sync {
     fn event(&self, event: Event);
 }
@@ -132,6 +148,40 @@ impl NativeOwner {
                 }
             })?,
         )?))))
+    }
+    /// Opens a document with bounded in-process `rquickjs` command & Takumi capture support
+    /// on both iOS and macOS (no external `pop-engine` child binary required).
+    #[uniffi::constructor]
+    pub fn open_in_process(
+        path: String,
+        mode: Mode,
+        executable_path: String,
+        listener: Box<dyn OwnerListener>,
+    ) -> Result<Arc<Self>, CoreError> {
+        let evaluator = pop_runtime::in_process_evaluator(PathBuf::from(executable_path)).map_err(|e| Failure {
+            kind: FailureKind::Rejected,
+            message: e.to_string(),
+            reason: Some(Code::EngineError),
+            op_index: None,
+            path: vec![],
+        })?;
+        Ok(Arc::new(Self(Arc::new(core::Owner::open_with_evaluator(
+            Path::new(&path),
+            mode,
+            Arc::new(move |event| listener.event(event)),
+            Some(evaluator),
+        )?))))
+    }
+    /// Evaluates an authored `commands.ts` command off the owner, commits its intents
+    /// atomically to Loro, publishes the live diff to attached pages, and returns its JSON result.
+    pub fn run_command(
+        &self,
+        name: String,
+        args_json: String,
+        origin: Origin,
+        completion: Box<dyn OwnerCommandCompletion>,
+    ) {
+        self.0.command(name, args_json, origin, core::CallOptions::default(), command_completion(completion));
     }
     pub fn app(&self) -> OpenedFile {
         self.0.app().into()
@@ -255,6 +305,74 @@ fn bytes_completion(completion: Box<dyn OwnerBytesCompletion>) -> core::Completi
         Err(failure) => completion.failed(failure),
     })
 }
+fn command_completion(completion: Box<dyn OwnerCommandCompletion>) -> core::Completion<core::CommandResult> {
+    Box::new(move |result| match result {
+        Ok(value) => completion.complete(value.into()),
+        Err(failure) => completion.failed(failure),
+    })
+}
+
+/// Executes an authored `commands.ts` command headlessly against a closed `.pop` document
+/// using bounded in-process `rquickjs` (16 MiB heap, 512 KiB stack, 250 ms timeout),
+/// commits atomically to Loro, flushes to SQLite, and releases the writer lock.
+#[uniffi::export]
+pub fn run_closed_command(
+    path: String,
+    name: String,
+    args_json: String,
+    executable_path: String,
+) -> Result<OwnerCommandResult, CoreError> {
+    let evaluator = pop_runtime::in_process_evaluator(PathBuf::from(executable_path)).map_err(|e| Failure {
+        kind: FailureKind::Rejected,
+        message: e.to_string(),
+        reason: Some(Code::EngineError),
+        op_index: None,
+        path: vec![],
+    })?;
+    let owner = core::Owner::open_with_evaluator(
+        Path::new(&path),
+        Mode::Document,
+        Arc::new(|_| {}),
+        Some(evaluator),
+    )?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    owner.command(
+        name,
+        args_json,
+        Origin::Agent,
+        core::CallOptions::default(),
+        Box::new(move |result| {
+            let _ = tx.send(result);
+        }),
+    );
+    let command_result = rx.recv().map_err(|_| Failure {
+        kind: FailureKind::Closed,
+        message: "Owner closed before command completed".into(),
+        reason: None,
+        op_index: None,
+        path: vec![],
+    })?;
+    let (close_tx, close_rx) = std::sync::mpsc::channel();
+    owner.close(
+        None,
+        None,
+        core::CallOptions::default(),
+        Box::new(move |result| {
+            let _ = close_tx.send(result);
+        }),
+    );
+    let close_result = close_rx.recv().map_err(|_| Failure {
+        kind: FailureKind::Closed,
+        message: "Owner closed unexpectedly during flush".into(),
+        reason: None,
+        op_index: None,
+        path: vec![],
+    })?;
+    let value = command_result?;
+    close_result?;
+    Ok(value.into())
+}
+
 fn string_completion<T: 'static>(
     completion: Box<dyn OwnerStringCompletion>,
     success: impl FnOnce(T) -> String + Send + 'static,

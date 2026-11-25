@@ -737,3 +737,36 @@ html[data-pop-capture] .checklist-row {
 html[data-pop-platform="ios"][data-pop-device="phone"]:not([data-pop-capture]) .checklist-shell { padding-top: calc(var(--pop-safe-top, 0px) + 12px); padding-bottom: var(--pop-safe-bottom, 0px); }
 html[data-pop-platform="ios"][data-pop-device="phone"]:not([data-pop-capture]) .checklist-header { min-height: var(--pop-host-actions-height, 0px); padding-inline-end: var(--pop-host-actions-width, 0px); margin-bottom: 12px; }
 html[data-pop-platform="ios"][data-pop-device="phone"]:not([data-pop-capture]) .checklist-menu { max-height: calc(100dvh - 24px - var(--pop-safe-top, 0px) - var(--pop-safe-bottom, 0px)); }
+
+/* Polka mobile compact layout: Polka's persistent composer bar & Touch Bar handle quick entry. */
+html[data-polka-host="1"] .checklist-paper {
+  grid-template-rows: auto auto minmax(0, 1fr) auto !important;
+  border-width: 2px !important;
+  border-radius: 16px 16px 24px 16px !important;
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--pop-ink) 10%, transparent) !important;
+}
+html[data-polka-host="1"] .checklist-header {
+  display: none !important;
+}
+html[data-polka-host="1"] .checklist-shell {
+  grid-template-rows: minmax(0, 1fr) !important;
+  padding: 6px 10px 10px !important;
+}
+html[data-polka-host="1"] .checklist-heading {
+  padding: 12px 14px 8px !important;
+}
+html[data-polka-host="1"] .checklist-eyebrow {
+  display: none !important;
+}
+html[data-polka-host="1"] .checklist-title {
+  font-size: 24px !important;
+}
+html[data-polka-host="1"] .checklist-composer {
+  display: none !important;
+}
+html[data-polka-host="1"] .checklist-tabs {
+  padding: 0 12px 8px !important;
+}
+html[data-polka-host="1"] .checklist-row {
+  padding: 9px 12px !important;
+}

@@ -587,3 +587,21 @@ html[data-pop-platform="ios"][data-pop-device="phone"]:not([data-pop-capture]) .
 html[data-pop-platform="ios"][data-pop-device="phone"]:not([data-pop-capture]) .title-row { min-height: var(--pop-host-actions-height, 0px); padding-inline-end: max(0px, calc(var(--pop-host-actions-width, 0px) - 24px)); }
 html[data-pop-platform="ios"][data-pop-device="phone"]:not([data-pop-capture]) .banana { top: calc(var(--pop-safe-top, 0px) + 8px); right: calc(var(--pop-host-actions-width, 0px) + 12px); }
 html[data-pop-platform="ios"][data-pop-device="phone"]:not([data-pop-capture]) .select-content { max-height: calc(100dvh - var(--pop-safe-top, 0px) - var(--pop-safe-bottom, 0px) - 24px); }
+
+/* Polka mobile compact layout: hide redundant inline composer & magnets so the grocery list fills the screen. */
+html[data-polka-host="1"] .door {
+  padding: 8px 10px 12px !important;
+}
+html[data-polka-host="1"] .magnet {
+  display: none !important;
+}
+html[data-polka-host="1"] .notepad {
+  padding: 12px 12px 10px !important;
+  border-radius: 16px !important;
+}
+html[data-polka-host="1"] .composer {
+  display: none !important;
+}
+html[data-polka-host="1"] .row {
+  padding: 8px 4px !important;
+}

@@ -1,7 +1,9 @@
 <script lang="ts">
   import "@hitslop/pop/base.css";
   import "./styles.css";
+  import { onDestroy } from "svelte";
   import { isRefused, type Value } from "@hitslop/pop";
+  import { bindPolkaHandlers, minimizePolkaKeyboard, showPolkaKeyboard, syncPolkaDeck } from "../_shared/polka";
   import { bindText, getDocument, haptics } from "@hitslop/pop/svelte";
   import { prefersReducedMotion } from "svelte/motion";
   import { flip } from "svelte/animate";
@@ -115,6 +117,55 @@
     if (draft.courseCode && !courses.some((course) => course.code === draft.courseCode))
       courses.push({ code: draft.courseCode, name: "Saved course" });
     return courses;
+  });
+
+  let quickAddOpen = $state(false);
+
+  onDestroy(bindPolkaHandlers({
+    onSubmit: async (text) => {
+      const clean = text.trim();
+      if (!clean) return;
+      const courseCode = doc.current.courses[0]?.code || "GEN";
+      await doc.change((tx) =>
+        addAssignment(tx, {
+          courseCode,
+          title: clean,
+          dueDate: day,
+          category: "Homework",
+          points: 0,
+          completed: false,
+          notes: "",
+        }),
+      );
+      quickAddOpen = false;
+      minimizePolkaKeyboard();
+      haptics.notification("success");
+    },
+    onAction: (id) => {
+      if (id === "filter-todo") { filter = "todo"; haptics.selection(); }
+      else if (id === "filter-done") { filter = "done"; haptics.selection(); }
+      else if (id === "add-assignment") {
+        quickAddOpen = !quickAddOpen;
+        if (quickAddOpen) showPolkaKeyboard();
+        else minimizePolkaKeyboard();
+      }
+    },
+  }));
+
+  $effect(() => {
+    syncPolkaDeck({
+      field: quickAddOpen
+        ? { kind: "entry", placeholder: "New assignment (due today)…", submit: { label: "Add", button: "check" }, canSubmit: true }
+        : { kind: "none" },
+      input: quickAddOpen ? "keys" : "none",
+      minimizesOnEntry: !quickAddOpen,
+      keyboard: { kind: quickAddOpen ? "qwerty" : "none" },
+      bar: [
+        { id: "filter-todo", title: `Open (${active.length})`, symbol: "tray", selected: filter === "todo" },
+        { id: "filter-done", title: `Done (${completed.length})`, symbol: "checkmark.circle", selected: filter === "done" },
+        { id: "add-assignment", title: "Add", symbol: "plus.circle.fill", selected: quickAddOpen, role: "primary" },
+      ],
+    });
   });
 </script>
 

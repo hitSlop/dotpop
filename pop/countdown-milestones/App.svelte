@@ -4,7 +4,8 @@
   import { bindText, getDocument } from "@hitslop/pop/svelte";
   import type { Value } from "@hitslop/pop";
   import { Checkbox, Dialog, Progress } from "bits-ui";
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { bindPolkaHandlers, minimizePolkaKeyboard, showPolkaKeyboard, syncPolkaDeck } from "../_shared/polka";
   import schema from "./schema";
   import { addMilestone, countdownView, moveMilestone, removeMilestone, setCountdown, setMilestoneDone } from "./countdown";
   import CountdownFace from "./CountdownFace.svelte";
@@ -63,6 +64,47 @@
   function move(id: string, step: number) {
     return doc.change((tx) => moveMilestone(tx, doc.current, id, step));
   }
+
+  let addingStep = $state(false);
+
+  onDestroy(bindPolkaHandlers({
+    onSubmit: async (text) => {
+      const clean = text.trim();
+      if (!clean || view.full) return;
+      await doc.change((tx) => addMilestone(tx, doc.current, clean));
+      addingStep = false;
+      minimizePolkaKeyboard();
+    },
+    onAction: (id) => {
+      if (id === "add-step") {
+        addingStep = !addingStep;
+        if (addingStep) showPolkaKeyboard();
+        else minimizePolkaKeyboard();
+      } else if (id === "edit-date") {
+        addingStep = false;
+        minimizePolkaKeyboard();
+        edit();
+      } else if (id === "toggle-reorder") {
+        editingSteps = !editingSteps;
+      }
+    },
+  }));
+
+  $effect(() => {
+    syncPolkaDeck({
+      field: addingStep
+        ? { kind: "entry", placeholder: "Add a milestone…", submit: { label: "Add", button: "check" }, canSubmit: true }
+        : { kind: "none" },
+      input: addingStep ? "keys" : "none",
+      minimizesOnEntry: !addingStep,
+      keyboard: { kind: addingStep ? "qwerty" : "none" },
+      bar: [
+        { id: "add-step", title: "Step", symbol: "plus.circle.fill", selected: addingStep, isEnabled: !view.full, role: addingStep ? "primary" : "normal" },
+        { id: "edit-date", title: "Date", symbol: "calendar" },
+        { id: "toggle-reorder", title: editingSteps ? "Done" : "Reorder", symbol: "arrow.up.arrow.down", selected: editingSteps },
+      ],
+    });
+  });
 </script>
 
 {#snippet milestoneList(items: readonly Milestone[], editable: boolean)}

@@ -1,7 +1,8 @@
 <script lang="ts">
 import "@hitslop/pop/base.css";
 import "./styles.css";
-import { onMount } from "svelte";
+import { onDestroy, onMount } from "svelte";
+import { bindPolkaHandlers, minimizePolkaKeyboard, showPolkaKeyboard, syncPolkaDeck } from "../_shared/polka";
 import { prefersReducedMotion } from "svelte/motion";
 import { Button, Slider, Tabs } from "bits-ui";
 import { attachments, bindText, getDocument, getEnvironment, haptics } from "@hitslop/pop/svelte";
@@ -168,6 +169,49 @@ onMount(() => {
     pod.dispose();
     closeClicker();
   };
+});
+
+let addingLink = $state(false);
+
+onDestroy(bindPolkaHandlers({
+  onSubmit: async (text) => {
+    const clean = text.trim();
+    if (!clean) return;
+    if (await pod.addFromText(clean)) {
+      addingLink = false;
+      minimizePolkaKeyboard();
+      haptics.notification("success");
+    }
+  },
+  onAction: (id) => {
+    if (id === "play-pause") pod.dispatch({ type: "playPause" });
+    else if (id === "prev") pod.dispatch({ type: "prev" });
+    else if (id === "next") pod.dispatch({ type: "next" });
+    else if (id === "menu") pod.dispatch({ type: "menu" });
+    else if (id === "add-link") {
+      addingLink = !addingLink;
+      if (addingLink) showPolkaKeyboard();
+      else minimizePolkaKeyboard();
+    }
+  },
+}));
+
+$effect(() => {
+  syncPolkaDeck({
+    field: addingLink
+      ? { kind: "entry", placeholder: "Paste YouTube link…", submit: { label: "Add", button: "check" }, canSubmit: true }
+      : { kind: "none" },
+    input: addingLink ? "keys" : "none",
+    minimizesOnEntry: !addingLink,
+    keyboard: { kind: addingLink ? "qwerty" : "none" },
+    bar: [
+      { id: "menu", title: "Menu", symbol: "line.3.horizontal" },
+      { id: "prev", title: "Prev", symbol: "backward.fill" },
+      { id: "play-pause", title: playing ? "Pause" : "Play", symbol: playing ? "pause.fill" : "play.fill", role: "primary" },
+      { id: "next", title: "Next", symbol: "forward.fill" },
+      { id: "add-link", title: "Link", symbol: "link.badge.plus", selected: addingLink },
+    ],
+  });
 });
 </script>
 

@@ -426,3 +426,15 @@ button:disabled { opacity: 0.4; cursor: default; }
     animation: none !important;
   }
 }
+
+/* Polka mobile compact layout */
+html[data-polka-host="1"] .shell {
+  padding: 10px 12px 18px !important;
+  gap: 12px !important;
+}
+html[data-polka-host="1"] .header {
+  display: none !important;
+}
+html[data-polka-host="1"] .addRow {
+  display: none !important;
+}

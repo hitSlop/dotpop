@@ -1,7 +1,9 @@
 <script lang="ts">
   import "@hitslop/pop/base.css";
   import "./styles.css";
+  import { onDestroy } from "svelte";
   import { flip } from "svelte/animate";
+  import { bindPolkaHandlers, syncPolkaDeck } from "../_shared/polka";
   import { fade } from "svelte/transition";
   import { prefersReducedMotion } from "svelte/motion";
   import Brand from "./Brand.svelte";
@@ -61,6 +63,39 @@
     menuTask = id;
     openMenu = id;
   }
+
+  onDestroy(bindPolkaHandlers({
+    onSubmit: async (text) => {
+      const clean = text.trim();
+      if (!clean) return;
+      await doc.change(tx => addTask(tx, clean));
+      haptics.impact();
+    },
+    onAction: (id) => {
+      if (id === "view-tasks") { activeView = "tasks"; haptics.selection(); }
+      else if (id === "view-filed") { activeView = "filed"; haptics.selection(); }
+      else if (id === "file-done" && finished > 0) { void fileFinished(); }
+    },
+  }));
+
+  $effect(() => {
+    syncPolkaDeck({
+      field: {
+        kind: "entry",
+        placeholder: "Add a little thing…",
+        submit: { label: "Add", button: "check" },
+        canSubmit: true,
+      },
+      input: "keys",
+      minimizesOnEntry: false,
+      keyboard: { kind: "qwerty" },
+      bar: [
+        { id: "view-tasks", title: "To do", symbol: "checklist", selected: activeView === "tasks" },
+        { id: "view-filed", title: "Filed", symbol: "archivebox", selected: activeView === "filed" },
+        { id: "file-done", title: finished > 0 ? `File (${finished})` : "File", symbol: "tray.and.arrow.down", isEnabled: finished > 0 },
+      ],
+    });
+  });
 </script>
 
 <main class="checklist-shell">
