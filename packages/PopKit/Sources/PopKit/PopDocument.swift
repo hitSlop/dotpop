@@ -10,6 +10,7 @@ public final class PopDocument: @unchecked Sendable {
     public let events: AsyncStream<PopDocumentEvent>
 
     private let owner: NativeOwner
+    internal var rawOwner: NativeOwner { owner }
     private let executablePath: String
     private let continuation: AsyncStream<PopDocumentEvent>.Continuation
 

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import PopKit
@@ -108,5 +109,29 @@ struct PopKitTests {
         #expect(captured.iconPNG?.prefix(4) == Data([0x89, 0x50, 0x4E, 0x47])) // PNG magic bytes
 
         try await doc.close()
+    }
+
+    @Test("PopDeviceIdentity mints valid RFC 8037 EdDSA JWTs verifiable with the embedded pk: public key")
+    func eddsaDeviceIdentityTokenRoundTrip() throws {
+        let identity = PopDeviceIdentity.ephemeral()
+        #expect(identity.accountID.hasPrefix("pk:"))
+        let pubPart = String(identity.accountID.dropFirst(3))
+        #expect(pubPart.count == 43)
+
+        let jwt = try identity.mintBearerToken(ttlSeconds: 300)
+        let parts = jwt.split(separator: ".").map(String.init)
+        #expect(parts.count == 3)
+
+        // Verify signature directly with the embedded public key
+        func decodeB64URL(_ s: String) -> Data? {
+            var base = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+            while base.count % 4 != 0 { base.append("=") }
+            return Data(base64Encoded: base)
+        }
+        let pubBytes = try #require(decodeB64URL(pubPart))
+        let sigBytes = try #require(decodeB64URL(parts[2]))
+        let pubKey = try Curve25519.Signing.PublicKey(rawRepresentation: pubBytes)
+        let signingInput = Data("\(parts[0]).\(parts[1])".utf8)
+        #expect(pubKey.isValidSignature(sigBytes, for: signingInput))
     }
 }

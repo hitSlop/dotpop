@@ -107,11 +107,10 @@ pub(crate) async fn serve(req: Request, env: Env) -> Result<Response> {
             return Refusal::new(429, "limited", "Limited").response();
         }
     }
-    let claims = match crate::auth::identity(&req, &env).await {
-        Ok(claims) => claims,
+    let identity = match crate::auth::identity(&req, &env).await {
+        Ok(identity) => identity,
         Err(error) => return identity_response(error),
     };
-    let identity = VerifiedIdentity::from(claims);
     identity.forward(req.headers_mut()?)?;
     req.headers_mut()?.delete("Authorization")?;
     match (matched.route.scope, matched.document) {
