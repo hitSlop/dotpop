@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
-  import { bindPolkaHandlers, syncPolkaDeck } from "../_shared/polka";
+  import { bindPolkaHandlers, minimizePolkaKeyboard, showPolkaKeyboard, syncPolkaDeck } from "../_shared/polka";
   import { Dialog, Select, Checkbox } from "bits-ui";
   import "@hitslop/pop/base.css";
   import "./styles.css";
@@ -330,7 +330,42 @@
 
   onDestroy(() => cancelAnimationFrame(raf));
 
+  let quickBlockOpen = $state(false);
+
+  function parseQuickTime(raw: string): { title: string; time: string } {
+    const m12 = raw.match(/^(.+?)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
+    if (m12) {
+      let h = Number(m12[2]) % 12;
+      if (m12[4]!.toLowerCase() === "pm") h += 12;
+      const mins = m12[3] ? Number(m12[3]) : 0;
+      return { title: m12[1]!.trim(), time: `${String(h).padStart(2, "0")}:${String(mins).padStart(2, "0")}` };
+    }
+    const m24 = raw.match(/^(.+?)\s+(\d{1,2}):(\d{2})$/);
+    if (m24) {
+      return { title: m24[1]!.trim(), time: `${String(Number(m24[2])).padStart(2, "0")}:${m24[3]}` };
+    }
+    return { title: raw.trim(), time: "" };
+  }
+
   onDestroy(bindPolkaHandlers({
+    onSubmit: async (text) => {
+      const clean = text.trim();
+      const targetDay = doc.current.days[activeDay];
+      if (!clean || !targetDay) return;
+      const parsed = parseQuickTime(clean);
+      await doc.change((tx) =>
+        addBlock(tx, doc.current, targetDay.name, {
+          title: parsed.title,
+          time: parsed.time,
+          done: false,
+          durationMinutes: parsed.time ? 60 : undefined,
+          color: "sky",
+        }),
+      );
+      quickBlockOpen = false;
+      minimizePolkaKeyboard();
+      haptics.notification("success");
+    },
     onAction: (id) => {
       if (id === "today") {
         pickedDay = null;
@@ -340,7 +375,9 @@
       } else if (id === "next-day") {
         pickDay((activeDay + 1) % doc.current.days.length);
       } else if (id === "add-block") {
-        edit(activeDay);
+        quickBlockOpen = !quickBlockOpen;
+        if (quickBlockOpen) showPolkaKeyboard();
+        else minimizePolkaKeyboard();
       }
     },
   }));
@@ -348,14 +385,17 @@
   $effect(() => {
     const dayLabel = doc.current.days[activeDay]?.name ?? "Day";
     syncPolkaDeck({
-      input: "none",
-      minimizesOnEntry: true,
-      keyboard: { kind: "none" },
+      field: quickBlockOpen
+        ? { kind: "entry", placeholder: `Add to ${dayLabel} (e.g. Gym 6pm)…`, submit: { label: "Add", button: "check" }, canSubmit: true }
+        : { kind: "none" },
+      input: quickBlockOpen ? "keys" : "none",
+      minimizesOnEntry: !quickBlockOpen,
+      keyboard: { kind: quickBlockOpen ? "qwerty" : "none" },
       bar: [
         { id: "prev-day", title: "Prev", symbol: "chevron.left" },
         { id: "today", title: dayLabel, symbol: "calendar" },
         { id: "next-day", title: "Next", symbol: "chevron.right" },
-        { id: "add-block", title: "Block", symbol: "plus.circle.fill", role: "primary" },
+        { id: "add-block", title: "Block", symbol: "plus.circle.fill", selected: quickBlockOpen, role: "primary" },
       ],
     });
   });

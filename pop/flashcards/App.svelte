@@ -2,7 +2,7 @@
   import "@hitslop/pop/base.css";
   import "./styles.css";
   import { onDestroy, onMount, untrack } from "svelte";
-  import { bindPolkaHandlers, syncPolkaDeck } from "../_shared/polka";
+  import { bindPolkaHandlers, minimizePolkaKeyboard, showPolkaKeyboard, syncPolkaDeck } from "../_shared/polka";
   import { Tween, prefersReducedMotion } from "svelte/motion";
   import { cubicOut } from "svelte/easing";
   import { Button, Dialog, Select, Tabs } from "bits-ui";
@@ -186,26 +186,65 @@
     void rotation.set(rotation.target, { duration: 0, delay: 0 });
   });
 
+  let polkaCardStep = $state<"idle" | "front" | "back">("idle");
+  let polkaFrontDraft = $state("");
+
   onDestroy(bindPolkaHandlers({
+    onSubmit: async (text) => {
+      const clean = text.trim();
+      if (!clean) return;
+      if (polkaCardStep === "front") {
+        polkaFrontDraft = clean;
+        polkaCardStep = "back";
+        haptics.selection();
+      } else if (polkaCardStep === "back" && activeDeck) {
+        await doc.change((tx) => addCard(tx, activeDeck.$id, polkaFrontDraft, clean));
+        polkaFrontDraft = "";
+        polkaCardStep = "idle";
+        minimizePolkaKeyboard();
+        haptics.notification("success");
+      }
+    },
     onAction: (id) => {
       if (id === "flip") flipCard();
       else if (id === "again") void grade(false);
       else if (id === "good") void grade(true);
       else if (id === "shuffle") void shuffle();
+      else if (id === "add-card") {
+        if (polkaCardStep === "idle") {
+          polkaCardStep = "front";
+          polkaFrontDraft = "";
+          showPolkaKeyboard();
+        } else {
+          polkaCardStep = "idle";
+          polkaFrontDraft = "";
+          minimizePolkaKeyboard();
+        }
+      }
     },
   }));
 
   $effect(() => {
     const hasCard = Boolean(currentCard);
+    const composing = polkaCardStep !== "idle";
     syncPolkaDeck({
-      input: "none",
-      minimizesOnEntry: true,
-      keyboard: { kind: "none" },
+      field: composing
+        ? {
+            kind: "entry",
+            placeholder: polkaCardStep === "front" ? "Card front (question)…" : "Card back (answer)…",
+            submit: { label: polkaCardStep === "front" ? "Next" : "Add", button: polkaCardStep === "front" ? "arrow" : "check" },
+            canSubmit: true,
+          }
+        : { kind: "none" },
+      input: composing ? "keys" : "none",
+      minimizesOnEntry: !composing,
+      keyboard: { kind: composing ? "qwerty" : "none" },
       bar: [
         { id: "flip", title: flipped ? "Front" : "Flip", symbol: "arrow.triangle.2.circlepath", isEnabled: hasCard },
         { id: "again", title: "Again", symbol: "arrow.uturn.backward", isEnabled: hasCard && flipped },
         { id: "good", title: "Good", symbol: "checkmark", isEnabled: hasCard && flipped, role: "primary" },
-        { id: "shuffle", title: "Shuffle", symbol: "shuffle", isEnabled: visibleCards.length > 1 },
+        { id: "add-card", title: composing ? "Cancel" : "Card", symbol: composing ? "xmark" : "plus.circle.fill", selected: composing },
+        { id: "shuffle", title: "Shuffle", symbol: "shuffle", priority: "overflow", isEnabled: visibleCards.length > 1 },
       ],
     });
   });
