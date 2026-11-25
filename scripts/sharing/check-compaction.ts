@@ -220,6 +220,16 @@ export async function objects(worker: Miniflare, binding: string, service?: stri
     },
   };
 }
+/** An R2 bucket whose calls are resent the same way; every call here is idempotent. */
+export async function bucket(worker: Miniflare, binding: string, service?: string) {
+  const target = await resent(() => worker.getR2Bucket(binding, service));
+  return new Proxy(target, {
+    get: (_, name) => {
+      const member = Reflect.get(target, name);
+      return typeof member === "function" ? (...args: unknown[]) => resent(() => member.apply(target, args)) : member;
+    },
+  });
+}
 
 export async function checkCompaction(
   worker: Miniflare,
@@ -242,7 +252,7 @@ export async function checkCompaction(
     401,
   );
   const namespace = await objects(worker, "DOCUMENTS", "relay");
-  const bucket = await worker.getR2Bucket("SEEDS", "relay");
+  const seeds = await bucket(worker, "SEEDS", "relay");
   const room: { room: string; capability?: string; access?: string } = {
     room: "00000000-0000-4000-a000-000000000001",
   };
@@ -283,7 +293,7 @@ export async function checkCompaction(
   assert.equal((await call(base+"/members",room.access,"POST",{capability:room.capability})).status,200);
   const unlistedBlob = new Uint8Array([23, 24, 25]);
   const unlistedHash = hash(unlistedBlob);
-  await bucket.put(objectKey(room.room, "blobs/" + unlistedHash), unlistedBlob);
+  await seeds.put(objectKey(room.room, "blobs/" + unlistedHash), unlistedBlob);
   assert.equal((await call(base + "/blob/" + unlistedHash, room.access)).status, 404,
     "An R2 object outside the accepted inventory is not readable");
   // An upload interrupted after its R2 write leaves only a registered cleanup key.
@@ -295,7 +305,7 @@ export async function checkCompaction(
   await test("delete-failure", {enabled: false});
   await test("alarm");
   assert.equal((await sql("SELECT count(*) AS n FROM garbage"))[0].n, 0);
-  assert.equal(await bucket.get(objectKey(room.room, "blobs/" + unlistedHash)), null);
+  assert.equal(await seeds.get(objectKey(room.room, "blobs/" + unlistedHash)), null);
   for (const suffix of ["/seed/extra", "/sync/extra", "/metadata/extra", "/sharing/extra", "/members/other"]) {
     assert.equal((await call(base + suffix, owner)).status, 404, "Extra route segments are refused: " + suffix);
   }

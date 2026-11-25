@@ -3,7 +3,7 @@
  * has no test key, token bypass, configurable certificate URL or asserted UID path.
  * Run through `bun run verify sharing` after installing worker-build (README). */
 import assert from "node:assert/strict";
-import { checkCompaction, relayHarness, decode, helloFrame, push, documentName, objects, resent } from "./check-compaction";
+import { checkCompaction, relayHarness, decode, helloFrame, push, documentName, objects, bucket, resent } from "./check-compaction";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -153,7 +153,7 @@ try {
   await stagingHook("delete-failure", {enabled: false});
   await stagingHook("fire-alarm");
   assert.equal((await stagingSQL("SELECT count(*) AS n FROM garbage"))[0].n, 0);
-  const stagingBucket = await worker.getR2Bucket("SEEDS", "relay");
+  const stagingBucket = await bucket(worker, "SEEDS", "relay");
   assert.equal((await stagingBucket.list({prefix: expiryDocument + "/"})).objects.length, 0);
   assert.equal(await (await stagingHook("alarm-time")).json(), null, "Empty staging does not loop alarms");
   assert.equal((await uploadSeed(expiryBase, stagingOwner, seed)).status, 200, "The owner can stage again after expiry");
@@ -196,7 +196,7 @@ try {
   assert.equal((await call(retryBase + "/open", a, "POST", openSeed(seed, [...abandoned, hash(replacement)]))).status,
     413, "Only the attachment set named by Open is charged to the budget");
   assert.equal((await call(retryBase + "/open", a, "POST", openSeed(seed, [hash(replacement)]))).status, 200);
-  const retryBucket = await worker.getR2Bucket("SEEDS", "relay");
+  const retryBucket = await bucket(worker, "SEEDS", "relay");
   for (const id of abandoned) assert.equal(await retryBucket.get(retryDocument + "/blobs/" + id), null);
   assert.deepEqual((await json<any[]>(retryBase + "/blobs", a)).map(item => item.hash), [hash(replacement)]);
   const largeDocument = "00000000-0000-4000-8000-000000000089", largeBase = "documents/" + largeDocument;
