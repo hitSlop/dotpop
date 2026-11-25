@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Dialog, RadioGroup } from "bits-ui";
   import { onDestroy } from "svelte";
+  import { bindPolkaHandlers, syncPolkaDeck } from "../_shared/polka";
   import Plus from "@lucide/svelte/icons/plus";
   import ArrowUpRight from "@lucide/svelte/icons/arrow-up-right";
   import Bell from "@lucide/svelte/icons/bell";
@@ -265,6 +266,37 @@
     haptics.impact();
   }
   onDestroy(() => cancelAnimationFrame(raf));
+
+  onDestroy(bindPolkaHandlers({
+    onAction: (id) => {
+      if (id === "prev-day") {
+        const idx = DAYS.indexOf(activeDay);
+        pickDay(DAYS[(idx + DAYS.length - 1) % DAYS.length]!);
+      } else if (id === "next-day") {
+        const idx = DAYS.indexOf(activeDay);
+        pickDay(DAYS[(idx + 1) % DAYS.length]!);
+      } else if (id === "today") {
+        pickedDay = null;
+        haptics.selection();
+      } else if (id === "add-class") {
+        begin("class");
+      }
+    },
+  }));
+
+  $effect(() => {
+    syncPolkaDeck({
+      input: "none",
+      minimizesOnEntry: true,
+      keyboard: { kind: "none" },
+      bar: [
+        { id: "prev-day", title: "Prev", symbol: "chevron.left" },
+        { id: "today", title: activeDay, symbol: "calendar" },
+        { id: "next-day", title: "Next", symbol: "chevron.right" },
+        { id: "add-class", title: "Class", symbol: "plus.circle.fill", role: "primary" },
+      ],
+    });
+  });
 </script>
 
 <svelte:window

@@ -357,3 +357,11 @@ html[data-pop-capture="static"] .flask { height: auto; min-height: 100vh; overfl
   flex: none;
   height: 380px;
 }
+
+/* Polka mobile compact layout */
+html[data-polka-host="1"] main,
+html[data-polka-host="1"] .shell,
+html[data-polka-host="1"] .tracker {
+  padding-top: 10px !important;
+  padding-bottom: 12px !important;
+}

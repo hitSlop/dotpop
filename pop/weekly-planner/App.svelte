@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
+  import { bindPolkaHandlers, syncPolkaDeck } from "../_shared/polka";
   import { Dialog, Select, Checkbox } from "bits-ui";
   import "@hitslop/pop/base.css";
   import "./styles.css";
@@ -328,6 +329,36 @@
   }
 
   onDestroy(() => cancelAnimationFrame(raf));
+
+  onDestroy(bindPolkaHandlers({
+    onAction: (id) => {
+      if (id === "today") {
+        pickedDay = null;
+        haptics.selection();
+      } else if (id === "prev-day") {
+        pickDay((activeDay + doc.current.days.length - 1) % doc.current.days.length);
+      } else if (id === "next-day") {
+        pickDay((activeDay + 1) % doc.current.days.length);
+      } else if (id === "add-block") {
+        edit(activeDay);
+      }
+    },
+  }));
+
+  $effect(() => {
+    const dayLabel = doc.current.days[activeDay]?.name ?? "Day";
+    syncPolkaDeck({
+      input: "none",
+      minimizesOnEntry: true,
+      keyboard: { kind: "none" },
+      bar: [
+        { id: "prev-day", title: "Prev", symbol: "chevron.left" },
+        { id: "today", title: dayLabel, symbol: "calendar" },
+        { id: "next-day", title: "Next", symbol: "chevron.right" },
+        { id: "add-block", title: "Block", symbol: "plus.circle.fill", role: "primary" },
+      ],
+    });
+  });
 </script>
 
 <svelte:window

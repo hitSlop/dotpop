@@ -3,7 +3,9 @@
   import "./styles.css";
   import { bindText, draft, getDocument, haptics } from "@hitslop/pop/svelte";
   import type { Value } from "@hitslop/pop";
+  import { onDestroy } from "svelte";
   import { prefersReducedMotion } from "svelte/motion";
+  import { bindPolkaHandlers, syncPolkaDeck } from "../_shared/polka";
   import { flip } from "svelte/animate";
   import { Tabs, Checkbox, Select, Button, Tooltip } from "bits-ui";
   import Plus from "@lucide/svelte/icons/plus";
@@ -41,6 +43,42 @@
     await doc.change((tx) => clearCheckedItems(tx, doc.current));
     haptics.notification("success");
   }
+
+  onDestroy(bindPolkaHandlers({
+    onSubmit: async (text) => {
+      const clean = text.trim();
+      if (!clean) return;
+      await doc.change((tx) => addItem(tx, clean, aisle));
+      haptics.impact();
+    },
+    onAction: (id) => {
+      if (id === "cycle-aisle") {
+        const idx = categories.indexOf(aisle);
+        aisle = categories[(idx + 1) % categories.length]!;
+        haptics.selection();
+      } else if (id === "clear-done") {
+        void clearDone();
+      }
+    },
+  }));
+
+  $effect(() => {
+    syncPolkaDeck({
+      field: {
+        kind: "entry",
+        placeholder: `Add to ${aisle}…`,
+        submit: { label: "Add", button: "check" },
+        canSubmit: true,
+      },
+      input: "keys",
+      minimizesOnEntry: false,
+      keyboard: { kind: "qwerty" },
+      bar: [
+        { id: "cycle-aisle", title: aisle, symbol: "tag" },
+        { id: "clear-done", title: doneCount > 0 ? `Clear (${doneCount})` : "Clear", symbol: "checkmark.circle", isEnabled: doneCount > 0 },
+      ],
+    });
+  });
 </script>
 
 {#snippet rows(items: readonly GroceryItem[], editable: boolean)}

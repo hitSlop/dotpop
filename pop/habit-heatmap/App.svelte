@@ -1,7 +1,8 @@
 <script lang="ts">
   import "@hitslop/pop/base.css";
   import "./styles.css";
-  import { onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
+  import { bindPolkaHandlers, syncPolkaDeck } from "../_shared/polka";
   import { AlertDialog, Checkbox, Dialog, RadioGroup, Tabs } from "bits-ui";
     import Check from "@lucide/svelte/icons/check";
   import Plus from "@lucide/svelte/icons/plus";
@@ -98,6 +99,26 @@
       () => (notice = `${habit.name}: ${shortDay(day)} ${done ? "cleared" : "complete"}.`),
     );
   }
+
+  onDestroy(bindPolkaHandlers({
+    onAction: (id) => {
+      if (id === "check-today" && active) toggle(active, today);
+      else if (id === "add-habit") begin();
+    },
+  }));
+
+  $effect(() => {
+    const doneToday = Boolean(active?.checkins[today]);
+    syncPolkaDeck({
+      input: "none",
+      minimizesOnEntry: true,
+      keyboard: { kind: "none" },
+      bar: [
+        { id: "check-today", title: doneToday ? "Done today" : "Check in", symbol: doneToday ? "checkmark.circle.fill" : "checkmark.circle", selected: doneToday, isEnabled: Boolean(active), role: doneToday ? "normal" : "primary" },
+        { id: "add-habit", title: "Habit", symbol: "plus" },
+      ],
+    });
+  });
 </script>
 
 {#snippet calendar(habit: Habit, editable: boolean)}

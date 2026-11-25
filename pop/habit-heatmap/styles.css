@@ -136,3 +136,9 @@ button.habit-cell:hover:not(:disabled) { background: color-mix(in srgb, var(--ha
 .habit-confirm [data-alert-dialog-title] { margin: 0 0 12px; font-size: 24px; overflow-wrap: anywhere; }
 .habit-confirm [data-alert-dialog-description] { margin: 0 0 24px; line-height: 1.5; }
 .habit-actions .habit-remove-confirm { background: var(--pop-focus); color: var(--pop-paper); border-color: var(--pop-focus); }
+
+/* Polka mobile compact layout */
+html[data-polka-host="1"] .habit-shell,
+html[data-polka-host="1"] main {
+  padding: 8px 10px 12px !important;
+}

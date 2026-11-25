@@ -1,7 +1,8 @@
 <script lang="ts">
 import "@hitslop/pop/base.css";
 import "./styles.css";
-import { onMount } from "svelte";
+import { onDestroy, onMount } from "svelte";
+import { bindPolkaHandlers, syncPolkaDeck } from "../_shared/polka";
 import { prefersReducedMotion } from "svelte/motion";
 import { Button, Slider, Tabs } from "bits-ui";
 import { attachments, bindText, getDocument, getEnvironment, haptics } from "@hitslop/pop/svelte";
@@ -168,6 +169,29 @@ onMount(() => {
     pod.dispose();
     closeClicker();
   };
+});
+
+onDestroy(bindPolkaHandlers({
+  onAction: (id) => {
+    if (id === "play-pause") pod.dispatch({ type: "playPause" });
+    else if (id === "prev") pod.dispatch({ type: "prev" });
+    else if (id === "next") pod.dispatch({ type: "next" });
+    else if (id === "menu") pod.dispatch({ type: "menu" });
+  },
+}));
+
+$effect(() => {
+  syncPolkaDeck({
+    input: "none",
+    minimizesOnEntry: true,
+    keyboard: { kind: "none" },
+    bar: [
+      { id: "menu", title: "Menu", symbol: "line.3.horizontal" },
+      { id: "prev", title: "Prev", symbol: "backward.fill" },
+      { id: "play-pause", title: playing ? "Pause" : "Play", symbol: playing ? "pause.fill" : "play.fill", role: "primary" },
+      { id: "next", title: "Next", symbol: "forward.fill" },
+    ],
+  });
 });
 </script>
 

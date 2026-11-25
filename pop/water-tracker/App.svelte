@@ -2,6 +2,7 @@
   import "@hitslop/pop/base.css";
   import "./styles.css";
   import { onDestroy, untrack } from "svelte";
+  import { bindPolkaHandlers, syncPolkaDeck } from "../_shared/polka";
   import { Tween, prefersReducedMotion } from "svelte/motion";
   import { cubicOut } from "svelte/easing";
   import { Button } from "bits-ui";
@@ -115,6 +116,29 @@
     particles = [];
     stopChime();
   }
+
+  onDestroy(bindPolkaHandlers({
+    onAction: (id) => {
+      if (id === "add-200") log(200, "Small glass");
+      else if (id === "add-250") log(250, "Glass");
+      else if (id === "add-500") log(500, "Bottle");
+      else if (id === "reset-day") reset();
+    },
+  }));
+
+  $effect(() => {
+    syncPolkaDeck({
+      input: "none",
+      minimizesOnEntry: true,
+      keyboard: { kind: "none" },
+      bar: [
+        { id: "add-200", title: "+200ml", symbol: "drop" },
+        { id: "add-250", title: "+250ml", symbol: "drop.fill" },
+        { id: "add-500", title: "+500ml", symbol: "waterbottle" },
+        { id: "reset-day", title: "Reset day", symbol: "arrow.counterclockwise", priority: "overflow", isEnabled: doc.current.intake > 0 },
+      ],
+    });
+  });
 
   function changeTarget(value: string) {
     const next = Number(value);

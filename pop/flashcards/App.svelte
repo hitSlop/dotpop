@@ -2,6 +2,7 @@
   import "@hitslop/pop/base.css";
   import "./styles.css";
   import { onDestroy, onMount, untrack } from "svelte";
+  import { bindPolkaHandlers, syncPolkaDeck } from "../_shared/polka";
   import { Tween, prefersReducedMotion } from "svelte/motion";
   import { cubicOut } from "svelte/easing";
   import { Button, Dialog, Select, Tabs } from "bits-ui";
@@ -183,6 +184,30 @@
 
   onDestroy(() => {
     void rotation.set(rotation.target, { duration: 0, delay: 0 });
+  });
+
+  onDestroy(bindPolkaHandlers({
+    onAction: (id) => {
+      if (id === "flip") flipCard();
+      else if (id === "again") void grade(false);
+      else if (id === "good") void grade(true);
+      else if (id === "shuffle") void shuffle();
+    },
+  }));
+
+  $effect(() => {
+    const hasCard = Boolean(currentCard);
+    syncPolkaDeck({
+      input: "none",
+      minimizesOnEntry: true,
+      keyboard: { kind: "none" },
+      bar: [
+        { id: "flip", title: flipped ? "Front" : "Flip", symbol: "arrow.triangle.2.circlepath", isEnabled: hasCard },
+        { id: "again", title: "Again", symbol: "arrow.uturn.backward", isEnabled: hasCard && flipped },
+        { id: "good", title: "Good", symbol: "checkmark", isEnabled: hasCard && flipped, role: "primary" },
+        { id: "shuffle", title: "Shuffle", symbol: "shuffle", isEnabled: visibleCards.length > 1 },
+      ],
+    });
   });
 </script>
 

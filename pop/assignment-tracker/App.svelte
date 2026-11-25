@@ -1,7 +1,9 @@
 <script lang="ts">
   import "@hitslop/pop/base.css";
   import "./styles.css";
+  import { onDestroy } from "svelte";
   import { isRefused, type Value } from "@hitslop/pop";
+  import { bindPolkaHandlers, syncPolkaDeck } from "../_shared/polka";
   import { bindText, getDocument, haptics } from "@hitslop/pop/svelte";
   import { prefersReducedMotion } from "svelte/motion";
   import { flip } from "svelte/animate";
@@ -115,6 +117,27 @@
     if (draft.courseCode && !courses.some((course) => course.code === draft.courseCode))
       courses.push({ code: draft.courseCode, name: "Saved course" });
     return courses;
+  });
+
+  onDestroy(bindPolkaHandlers({
+    onAction: (id) => {
+      if (id === "filter-todo") { filter = "todo"; haptics.selection(); }
+      else if (id === "filter-done") { filter = "done"; haptics.selection(); }
+      else if (id === "add-assignment") { edit(); }
+    },
+  }));
+
+  $effect(() => {
+    syncPolkaDeck({
+      input: "none",
+      minimizesOnEntry: true,
+      keyboard: { kind: "none" },
+      bar: [
+        { id: "filter-todo", title: `Open (${active.length})`, symbol: "tray", selected: filter === "todo" },
+        { id: "filter-done", title: `Done (${completed.length})`, symbol: "checkmark.circle", selected: filter === "done" },
+        { id: "add-assignment", title: "Add", symbol: "plus.circle.fill", role: "primary" },
+      ],
+    });
   });
 </script>
 
