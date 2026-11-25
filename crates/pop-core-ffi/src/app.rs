@@ -124,6 +124,13 @@ pub struct ResponsePlan {
 pub fn resource_response(info: ResourceInfo, route: ResourceRoute, range: Option<String>) -> ResponsePlan {
     pop_contracts::resources::resource_response(&info, route, range.as_deref())
 }
+/// One authored command declared by a pop app, with its JSON Schema argument descriptor.
+#[derive(uniffi::Record)]
+pub struct CommandSpec {
+    pub name: String,
+    pub description: String,
+    pub args_schema_json: String,
+}
 /// The native view of an accepted app. The original descriptor is opaque to Swift.
 #[derive(uniffi::Record)]
 pub struct AppDefinition {
@@ -133,6 +140,7 @@ pub struct AppDefinition {
     pub views: Views,
     /// What the app declared that this host implements; the host grants nothing else.
     pub capabilities: Vec<Capability>,
+    pub commands: Vec<CommandSpec>,
     pub descriptor_json: String,
 }
 impl From<&app::AppDefinition> for AppDefinition {
@@ -143,6 +151,15 @@ impl From<&app::AppDefinition> for AppDefinition {
             theme: app.theme(),
             views: app.views(),
             capabilities: app.capabilities(),
+            commands: app
+                .commands()
+                .iter()
+                .map(|c| CommandSpec {
+                    name: c.name.clone(),
+                    description: c.description.clone(),
+                    args_schema_json: c.args.json_schema().to_string(),
+                })
+                .collect(),
             descriptor_json: app.document_json().into(),
         }
     }

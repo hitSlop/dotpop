@@ -33,7 +33,7 @@ enum Provider {
     #[cfg(not(target_os = "ios"))]
     Process(native::Evaluator),
     #[cfg(feature = "in-process")]
-    InProcessCapture(in_process::Evaluator),
+    InProcess(in_process::Evaluator),
 }
 impl Evaluator {
     /// Start a fresh restricted child process for each command or capture job.
@@ -45,7 +45,14 @@ impl Evaluator {
     /// Authored commands remain unavailable even when process support is also built.
     #[cfg(feature = "in-process")]
     pub fn in_process_capture(executable: std::path::PathBuf) -> Result<Self, Error> {
-        in_process::Evaluator::new(executable).map(|provider| Self { provider: Provider::InProcessCapture(provider) })
+        in_process::Evaluator::new(executable).map(|provider| Self { provider: Provider::InProcess(provider) })
+    }
+    /// Run Takumi capture and bounded authored `commands.ts` in process (16 MiB heap,
+    /// 512 KiB stack, 250 ms interrupt deadline, zero host I/O) for iOS and embedded hosts.
+    #[cfg(feature = "in-process")]
+    pub fn in_process_commands(executable: std::path::PathBuf) -> Result<Self, Error> {
+        in_process::Evaluator::new_with_commands(executable)
+            .map(|provider| Self { provider: Provider::InProcess(provider) })
     }
     /// Whether this host explicitly grants authored command execution.
     pub fn supports_commands(&self) -> bool {
@@ -53,7 +60,7 @@ impl Evaluator {
             #[cfg(not(target_os = "ios"))]
             Provider::Process(_) => true,
             #[cfg(feature = "in-process")]
-            Provider::InProcessCapture(_) => false,
+            Provider::InProcess(ref provider) => provider.supports_commands(),
         }
     }
 
@@ -63,7 +70,7 @@ impl Evaluator {
             #[cfg(not(target_os = "ios"))]
             Provider::Process(ref provider) => provider.executable_path(),
             #[cfg(feature = "in-process")]
-            Provider::InProcessCapture(ref provider) => provider.executable_path(),
+            Provider::InProcess(ref provider) => provider.executable_path(),
         }
     }
     /// Evaluate a command using the explicitly configured execution policy.
@@ -72,7 +79,7 @@ impl Evaluator {
             #[cfg(not(target_os = "ios"))]
             Provider::Process(ref provider) => provider.run(runtime_abi, bundle, request),
             #[cfg(feature = "in-process")]
-            Provider::InProcessCapture(ref provider) => provider.run(runtime_abi, bundle, request),
+            Provider::InProcess(ref provider) => provider.run(runtime_abi, bundle, request),
         }
     }
     /// Collect capture markup using the configured provider.
@@ -81,7 +88,7 @@ impl Evaluator {
             #[cfg(not(target_os = "ios"))]
             Provider::Process(ref provider) => provider.markup(runtime_abi, bundle, request, widget),
             #[cfg(feature = "in-process")]
-            Provider::InProcessCapture(ref provider) => provider.markup(runtime_abi, bundle, request, widget),
+            Provider::InProcess(ref provider) => provider.markup(runtime_abi, bundle, request, widget),
         }
     }
     /// Rasterize markup using the configured provider's supported output kinds.
@@ -96,7 +103,7 @@ impl Evaluator {
             #[cfg(not(target_os = "ios"))]
             Provider::Process(ref provider) => provider.raster(runtime_abi, batch, images, mode),
             #[cfg(feature = "in-process")]
-            Provider::InProcessCapture(ref provider) => provider.raster(runtime_abi, batch, images, mode),
+            Provider::InProcess(ref provider) => provider.raster(runtime_abi, batch, images, mode),
         }
     }
 }

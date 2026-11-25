@@ -92,3 +92,35 @@ pub(crate) fn evaluate_job(input: Job<'_>, interrupted: impl FnMut() -> bool + '
     }
     Ok(output)
 }
+
+/// Evaluates an authored command in a fresh QuickJS realm with an explicit memory cap.
+/// Used by bounded in-process hosts (iOS and embedded SwiftPM consumers) where no child
+/// process exists and heap limits must stay tight.
+#[cfg(feature = "in-process")]
+pub(crate) fn evaluate_command_bounded(
+    runtime_abi: u64,
+    bundle: &str,
+    request: &str,
+    memory_limit: usize,
+    interrupted: impl FnMut() -> bool + 'static,
+) -> Result<String, Error> {
+    let prelude = prelude(runtime_abi)?;
+    let realm = crate::realm::create_with_limits(memory_limit, 512 << 10, interrupted)?;
+    let strict = |script: &str| format!("(function(){{\"use strict\";\n{script}\n}})();");
+    let output = realm.outcome(realm.context.with(|ctx| {
+        ctx.eval::<(), _>(strict(prelude)).catch(&ctx).map_err(crate::realm::javascript_error)?;
+        ctx.eval::<(), _>(strict(bundle)).catch(&ctx).map_err(crate::realm::javascript_error)?;
+        let run: Function = ctx.globals().get("__popRun").catch(&ctx).map_err(crate::realm::javascript_error)?;
+        run.call::<_, String>((request,)).catch(&ctx).map_err(crate::realm::javascript_error)
+    }))?;
+    if output.len() > OUTPUT {
+        return Err(Error::Output("Command output is too large".into()));
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&output)
+        && value.get("ok") == Some(&serde_json::Value::Bool(false))
+        && value.get("error").and_then(serde_json::Value::as_str).is_some_and(|e| e.to_ascii_lowercase().contains("out of memory"))
+    {
+        return Err(Error::Memory);
+    }
+    Ok(output)
+}

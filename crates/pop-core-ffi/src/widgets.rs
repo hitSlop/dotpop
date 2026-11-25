@@ -47,6 +47,15 @@ impl CaptureRuntime {
         Ok(std::sync::Arc::new(Self { evaluator }))
     }
 
+    /// Creates a self-contained in-process Takumi capture runtime that works identically
+    /// on iOS and macOS without spawning an external `pop-engine` binary.
+    #[uniffi::constructor]
+    pub fn in_process(executable_path: String) -> Result<std::sync::Arc<Self>, crate::CoreError> {
+        let evaluator = pop_runtime::in_process_evaluator(executable_path.into());
+        let evaluator = evaluator.map_err(pop_storage::store::from_error)?;
+        Ok(std::sync::Arc::new(Self { evaluator }))
+    }
+
     /// Renders and publishes an export from a source the host already saved.
     pub fn export_saved(&self, path: String, format: ExportFormat, output: String) -> Result<(), crate::CoreError> {
         Ok(pop_runtime::capture::export_saved(

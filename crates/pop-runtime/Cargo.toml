@@ -9,6 +9,10 @@ autotests = false
 [lints]
 workspace = true
 
+[features]
+default = []
+in-process = ["pop-runner/in-process"]
+
 [dependencies]
 pop-core = { path = "../pop-core" }
 pop-contracts = { path = "../pop-contracts" }
