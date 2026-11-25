@@ -30,8 +30,9 @@ poster. The file name changes when the card does, so link previews refetch it.
 The current Corner Hello file character is a hand-authored vector with its editable
 Rive project in `artwork/brand/corner-hello`. That source exports `mark.svg`, `hello.svg`,
 `mark.webp`, the main `logo.webp` paired with the existing lettering, and the live
-`mascot-wave` and `mascot-party` images. The app keeps its gradient icon and documents
-keep their captured artwork. Run the source folder's `export.mjs` to rebuild those
+`mascot-wave` and `mascot-party` images. The app icon images (`appicon*`) are exported from the
+Icon Composer document by `artwork/brand/app-icon/export.mjs`, and documents keep their captured
+artwork. Run the source folder's `export.mjs` to rebuild those
 outputs; its README describes the CLI requirement. The remaining artwork below comes
 from the sticker treatment.
 
