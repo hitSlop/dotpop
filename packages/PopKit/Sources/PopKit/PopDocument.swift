@@ -185,10 +185,10 @@ public final class PopDocument: @unchecked Sendable {
     }
 
     @MainActor
-    public func makeSchemeHandler() throws -> PopSchemeHandler {
+    public func makeSchemeHandler(shellDirectory: URL? = nil) throws -> PopSchemeHandler {
         do {
             let reader = try owner.resourceReader()
-            return PopSchemeHandler(reader: reader)
+            return PopSchemeHandler(reader: reader, shellDirectory: shellDirectory)
         } catch {
             throw PopError.wrap(error)
         }
